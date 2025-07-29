@@ -1500,26 +1500,17 @@ def send_sara_report_email(
         attachment_paths = [master_summary_file]
         attachment_paths.extend(exported_files.values())
         
-        # Filter existing files only
-        existing_attachments = [path for path in attachment_paths if os.path.exists(path)]
+        # Filter existing files only - Include only agency files, not master summary
+        agency_attachments = [path for path in exported_files.values() if os.path.exists(path)]
         
-        # Create professional French email body
-        current_time = pd.Timestamp.now().strftime('%d/%m/%Y à %H:%M')
-        total_transactions = processing_stats.get('total_transactions', 0) if processing_stats else 0
-        total_agencies = len(exported_files)
-        
+        # Create simple French email body
         body = f"""
         <html>
         <head>
             <style>
                 body {{ font-family: Arial, sans-serif; line-height: 1.8; color: #333; margin: 20px; }}
                 .greeting {{ font-size: 16px; margin-bottom: 20px; }}
-                .content {{ margin: 20px 0; }}
-                .summary {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }}
-                .files {{ background-color: #e8f4fd; padding: 15px; border-radius: 5px; margin: 15px 0; }}
-                .footer {{ margin-top: 30px; font-size: 12px; color: #666; }}
-                ul {{ padding-left: 20px; }}
-                li {{ margin: 5px 0; }}
+                .footer {{ margin-top: 30px; font-size: 14px; }}
             </style>
         </head>
         <body>
@@ -1528,47 +1519,16 @@ def send_sara_report_email(
                 <p>Trouvez ci-joint le reporting de vos transactions pour la journée indiquée en objet.</p>
             </div>
             
-            <div class="content">
-                <div class="summary">
-                    <h4>📊 Résumé du traitement :</h4>
-                    <ul>
-                        <li><strong>Date de traitement :</strong> {report_date}</li>
-                        <li><strong>Nombre d'agences :</strong> {total_agencies}</li>
-                        <li><strong>Total des transactions :</strong> {total_transactions:,}</li>
-                        <li><strong>Fichiers générés :</strong> {len(existing_attachments)}</li>
-                        <li><strong>Heure de génération :</strong> {current_time}</li>
-                    </ul>
-                </div>
-                
-                <div class="files">
-                    <h4>📎 Fichiers joints :</h4>
-                    <ul>
-                        <li><strong>Résumé général :</strong> {os.path.basename(master_summary_file)}</li>"""
-        
-        # Add individual agency files
-        for agency_name, filepath in exported_files.items():
-            filename = os.path.basename(filepath)
-            file_size = os.path.getsize(filepath) / 1024  # KB
-            body += f"<li><strong>{agency_name.upper()} :</strong> {filename} ({file_size:.1f} Ko)</li>"
-        
-        total_size_mb = sum(os.path.getsize(f) for f in existing_attachments)/1024/1024
-        
-        body += f"""
-                    </ul>
-                    <p><strong>Taille totale :</strong> {total_size_mb:.2f} Mo</p>
-                </div>
-                
-                <p>Tous les fichiers sont au format Excel avec plusieurs feuilles incluant les données de transaction, les annuaires de portefeuilles et les annuaires bancaires.</p>
-            </div>
-            
             <div class="footer">
                 <p>Cordialement,<br>
-                L'équipe SARA<br>
-                <em>Rapport généré automatiquement le {current_time}</em></p>
+                L'équipe SARA</p>
             </div>
         </body>
         </html>
         """
+        
+        # Use only agency files as attachments (exclude master summary)
+        existing_attachments = agency_attachments
         
         # Send email
         success = send_email_with_attachments(subject, body, existing_attachments, email_config)
