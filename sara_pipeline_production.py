@@ -19,6 +19,7 @@ import warnings
 import smtplib
 import os
 import re
+import sys
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -1430,11 +1431,17 @@ def send_email_with_attachments(
             msg.attach(part)
         
         # Create SMTP session
+        logger.info(f"Connecting to SMTP server: {email_config['smtp_server']}:{email_config['smtp_port']}")
         server = smtplib.SMTP(email_config['smtp_server'], email_config['smtp_port'])
+        
+        logger.info("Enabling TLS encryption...")
         server.starttls()  # Enable security
+        
+        logger.info(f"Authenticating as: {email_config['sender_email']}")
         server.login(email_config['sender_email'], email_config['sender_password'])
         
         # Send email
+        logger.info("Sending email message...")
         text = msg.as_string()
         server.sendmail(email_config['sender_email'], email_config['recipients'], text)
         server.quit()
@@ -1445,8 +1452,25 @@ def send_email_with_attachments(
         
         return True
         
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"❌ SMTP Authentication failed: {str(e)}")
+        logger.error("❌ Check your email address and password/app password")
+        return False
+    except smtplib.SMTPRecipientsRefused as e:
+        logger.error(f"❌ Recipients refused: {str(e)}")
+        logger.error("❌ Check recipient email addresses are valid")
+        return False
+    except smtplib.SMTPServerDisconnected as e:
+        logger.error(f"❌ SMTP server disconnected: {str(e)}")
+        logger.error("❌ Check internet connection and SMTP server settings")
+        return False
+    except smtplib.SMTPException as e:
+        logger.error(f"❌ SMTP error: {str(e)}")
+        logger.error("❌ Check SMTP server settings and port number")
+        return False
     except Exception as e:
-        logger.error(f"Failed to send email: {str(e)}")
+        logger.error(f"❌ Unexpected error sending email: {str(e)}")
+        logger.error("❌ Check your email configuration and internet connection")
         return False
 
 
@@ -1530,13 +1554,27 @@ def send_sara_report_email(
         # Use only agency files as attachments (exclude master summary)
         existing_attachments = agency_attachments
         
-        # Send email
+        # Send email with detailed status reporting
+        logger.info(f"📧 Attempting to send email to: {', '.join(email_config['recipients'])}")
+        logger.info(f"📎 Attachments to include: {len(existing_attachments)} files")
+        
         success = send_email_with_attachments(subject, body, existing_attachments, email_config)
         
         if success:
-            logger.info("📧 SARA report email sent successfully")
+            logger.info("✅ SARA report email sent successfully!")
+            logger.info(f"✅ Email delivered to: {', '.join(email_config['recipients'])}")
+            logger.info(f"✅ Subject: {subject}")
+            logger.info(f"✅ Attachments sent: {len(existing_attachments)} files")
+            print(f"\n🎉 EMAIL SENT SUCCESSFULLY!")
+            print(f"📧 Recipients: {', '.join(email_config['recipients'])}")
+            print(f"📋 Subject: {subject}")
+            print(f"📎 Files attached: {len(existing_attachments)}")
         else:
-            logger.error("📧 Failed to send SARA report email")
+            logger.error("❌ FAILED to send SARA report email!")
+            logger.error("❌ Email delivery unsuccessful - check SMTP settings and credentials")
+            print(f"\n⚠️  EMAIL SENDING FAILED!")
+            print(f"❌ Could not deliver email to: {', '.join(email_config['recipients'])}")
+            print(f"❌ Check your email configuration and internet connection")
         
         return success
         
@@ -1545,8 +1583,89 @@ def send_sara_report_email(
         return False
 
 
+def test_email_configuration() -> bool:
+    """
+    Test email configuration by sending a simple test email.
+    
+    Returns:
+        True if test email sent successfully, False otherwise
+    """
+    try:
+        # Check if email configuration is available
+        try:
+            email_config = EmailConfig.get_config()
+        except ValueError as e:
+            print(f"❌ Email configuration test failed: {str(e)}")
+            print("🔧 Please set the required environment variables first.")
+            return False
+        
+        print(f"📧 Testing email configuration...")
+        print(f"📤 Sender: {email_config['sender_email']}")
+        print(f"📥 Recipients: {', '.join(email_config['recipients'])}")
+        print(f"🌐 SMTP Server: {email_config['smtp_server']}:{email_config['smtp_port']}")
+        
+        # Create simple test email
+        test_subject = "SARA Email Configuration Test"
+        test_body = """
+        <html>
+        <body style="font-family: Arial, sans-serif; margin: 20px;">
+            <h3>🧪 SARA Email Configuration Test</h3>
+            <p>Bonjour,</p>
+            <p>Ceci est un email de test pour vérifier la configuration SARA.</p>
+            <p>Si vous recevez ce message, votre configuration email fonctionne correctement!</p>
+            <hr>
+            <p><em>Test envoyé le: {}</em></p>
+            <p>L'équipe SARA</p>
+        </body>
+        </html>
+        """.format(pd.Timestamp.now().strftime('%d/%m/%Y à %H:%M:%S'))
+        
+        # Send test email (no attachments)
+        success = send_email_with_attachments(test_subject, test_body, [], email_config)
+        
+        if success:
+            print("✅ EMAIL TEST SUCCESSFUL!")
+            print("📧 Test email sent successfully to all recipients.")
+            print("📥 Check your email inbox (including spam folder).")
+            print("🎉 Your email configuration is working correctly!")
+        else:
+            print("❌ EMAIL TEST FAILED!")
+            print("📧 Could not send test email.")
+            print("🔧 Check your configuration and try again.")
+        
+        return success
+        
+    except Exception as e:
+        print(f"❌ Email test error: {str(e)}")
+        return False
+
+
 if __name__ == "__main__":
-    # Example usage
+    # Check for test mode
+    if len(sys.argv) > 1 and sys.argv[1] == "--test-email":
+        print("🧪 SARA Email Configuration Test")
+        print("=" * 40)
+        test_result = test_email_configuration()
+        sys.exit(0 if test_result else 1)
+    
+    # Show usage if help requested
+    if len(sys.argv) > 1 and sys.argv[1] in ["--help", "-h"]:
+        print("SARA Transaction Processing Pipeline")
+        print("=" * 40)
+        print("Usage:")
+        print("  python3 sara_pipeline_production.py              # Run full pipeline")
+        print("  python3 sara_pipeline_production.py --test-email # Test email configuration")
+        print("  python3 sara_pipeline_production.py --help       # Show this help")
+        print("")
+        print("Email Configuration:")
+        print("  Set these environment variables before running:")
+        print("  export SARA_EMAIL_SENDER='your_email@gmail.com'")
+        print("  export SARA_EMAIL_PASSWORD='your_app_password'")
+        print("  export SARA_EMAIL_RECIPIENTS='partner1@email.com,partner2@email.com'")
+        sys.exit(0)
+    
+    # Normal pipeline execution
+    print("🚀 Starting SARA Transaction Processing Pipeline...")
     try:
         # Load data
         agent_data, customer_data = load_transaction_data(
@@ -1613,16 +1732,31 @@ if __name__ == "__main__":
         for agency_name, filepath in exported_files.items():
             print(f"  - {agency_name.upper()}: {filepath}")
         
-        print(f"\n📧 Email Summary:")
+        print(f"\n📧 Email Delivery Status:")
         if email_sent:
-            print("✅ Email sent successfully with all generated files")
+            print("🎉 SUCCESS: Email sent successfully with all agency files attached!")
+            print("✅ Your partners should receive the transaction reports shortly.")
         else:
-            print("ℹ️  Email not sent (configuration not available or failed)")
-            print("   To enable email notifications, set these environment variables:")
+            print("❌ EMAIL NOT SENT - Configuration Missing or Delivery Failed")
+            print("")
+            print("🔧 To enable email notifications, configure these environment variables:")
             print("   export SARA_EMAIL_SENDER='your_email@gmail.com'")
             print("   export SARA_EMAIL_PASSWORD='your_app_password'")
-            print("   export SARA_EMAIL_RECIPIENTS='recipient1@email.com,recipient2@email.com'")
-            print("   Optional: SARA_SMTP_SERVER and SARA_SMTP_PORT")
+            print("   export SARA_EMAIL_RECIPIENTS='partner1@email.com,partner2@email.com'")
+            print("   # Optional:")
+            print("   export SARA_SMTP_SERVER='smtp.gmail.com'")
+            print("   export SARA_SMTP_PORT='587'")
+            print("")
+            print("📧 For Gmail users:")
+            print("   1. Enable 2-factor authentication")
+            print("   2. Generate an 'App Password' (not your regular password)")
+            print("   3. Use the App Password as SARA_EMAIL_PASSWORD")
+            print("")
+            print("⚠️  If configuration looks correct but email still fails:")
+            print("   - Check internet connection")
+            print("   - Verify SMTP server settings")
+            print("   - Ensure recipients' email addresses are valid")
+            print("   - Check spam/junk folders")
         
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}")
