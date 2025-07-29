@@ -587,6 +587,24 @@ def identify_all_agency_transactions(df: pd.DataFrame) -> Dict[str, pd.DataFrame
     
     # CRITICAL VALIDATION 1: Sum of agency transactions should equal number of AGENT transactions
     if total_agency_transactions != agent_transactions_count:
+        # Debug the mismatch
+        logger.error(f"DEBUGGING AGENCY MISMATCH:")
+        logger.error(f"Expected AGENT transactions: {agent_transactions_count}")
+        logger.error(f"Sum of agency transactions: {total_agency_transactions}")
+        
+        # Check each agency's user types
+        for agency_name, agency_df in agency_dataframes.items():
+            if len(agency_df) > 0:
+                user_types = agency_df['Type utilisateur transaction'].value_counts()
+                logger.error(f"{agency_name}: {len(agency_df)} transactions - {dict(user_types)}")
+                
+                # Show specific names that might be problematic
+                if agency_name == 'hop':
+                    hop_senders = agency_df['Nom portefeuille expediteur'].unique()
+                    hop_receivers = agency_df['Nom portefeuille destinataire'].unique()
+                    logger.error(f"HOP senders: {hop_senders}")
+                    logger.error(f"HOP receivers: {hop_receivers}")
+        
         raise ValueError(f"Agency transaction count mismatch! "
                         f"Sum of agency transactions: {total_agency_transactions}, "
                         f"Expected AGENT transactions: {agent_transactions_count}")
