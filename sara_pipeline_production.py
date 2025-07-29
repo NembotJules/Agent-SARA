@@ -351,7 +351,7 @@ class AgencyIdentifier:
             name: Agency name to check
             
         Returns:
-            True if name matches HOP patterns
+            True if name matches HOP patterns...
         """
         if not isinstance(name, str):
             return False
