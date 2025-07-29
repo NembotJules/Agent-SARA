@@ -1058,6 +1058,230 @@ def finalize_all_agency_data(processed_agencies: Dict[str, Tuple[pd.DataFrame, p
     return finalized_agencies
 
 
+# ============================================================================
+# DATA EXPORT FUNCTIONS
+# ============================================================================
+
+def export_agency_data_to_excel(
+    agency_name: str, 
+    final_df: pd.DataFrame, 
+    annuaire_df: pd.DataFrame, 
+    bank_annuaire_df: pd.DataFrame,
+    output_dir: str = "."
+) -> str:
+    """
+    Export a single agency's data to Excel file.
+    
+    Args:
+        agency_name: Name of the agency
+        final_df: Finalized agency transactions dataframe
+        annuaire_df: Wallet directory dataframe
+        bank_annuaire_df: Bank directory dataframe
+        output_dir: Directory to save the file (default: current directory)
+    
+    Returns:
+        Path to the created Excel file
+        
+    Raises:
+        ValueError: If export fails
+    """
+    # Create filename following the original naming convention
+    filename = f"transactions_{agency_name}_28_07_2025.xlsx"
+    filepath = Path(output_dir) / filename
+    
+    logger.info(f"Exporting {agency_name} data to {filepath}")
+    
+    try:
+        # Validate data before export
+        if len(final_df) == 0:
+            logger.warning(f"No transactions to export for {agency_name}")
+            return str(filepath)
+        
+        # Create Excel writer with multiple sheets
+        with pd.ExcelWriter(filepath, engine='xlsxwriter') as writer:
+            # Main transactions sheet
+            final_df.to_excel(writer, sheet_name='Transactions', index=False)
+            
+            # Wallet directory sheet (if not empty)
+            if len(annuaire_df) > 0:
+                annuaire_df.to_excel(writer, sheet_name='Annuaire_Portefeuilles', index=False)
+            
+            # Bank directory sheet (if not empty)
+            if len(bank_annuaire_df) > 0:
+                bank_annuaire_df.to_excel(writer, sheet_name='Annuaire_Banques', index=False)
+            
+            # Summary sheet
+            summary_data = {
+                'Metric': [
+                    'Total Transactions',
+                    'Transaction Types',
+                    'Date Range Start',
+                    'Date Range End', 
+                    'Unique Wallets',
+                    'Unique Bank Accounts'
+                ],
+                'Value': [
+                    len(final_df),
+                    ', '.join(final_df['Type transaction'].value_counts().index.tolist()),
+                    final_df['Date transaction'].min() if len(final_df) > 0 else 'N/A',
+                    final_df['Date transaction'].max() if len(final_df) > 0 else 'N/A',
+                    len(annuaire_df),
+                    len(bank_annuaire_df)
+                ]
+            }
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        
+        logger.info(f"✅ Successfully exported {agency_name}: {len(final_df)} transactions to {filepath}")
+        return str(filepath)
+        
+    except Exception as e:
+        logger.error(f"Failed to export {agency_name} data: {str(e)}")
+        raise ValueError(f"Export failed for {agency_name}: {str(e)}")
+
+
+def export_all_agency_data(
+    final_agency_data: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
+    output_dir: str = "."
+) -> Dict[str, str]:
+    """
+    Export all agency data to Excel files.
+    
+    Args:
+        final_agency_data: Dictionary of finalized agency data
+        output_dir: Directory to save files (default: current directory)
+    
+    Returns:
+        Dictionary mapping agency names to their exported file paths
+        
+    Raises:
+        ValueError: If any export fails
+    """
+    logger.info(f"Exporting all agency data to directory: {output_dir}")
+    
+    # Ensure output directory exists
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    exported_files = {}
+    export_summary = {
+        'total_agencies': len(final_agency_data),
+        'total_transactions': 0,
+        'successful_exports': 0,
+        'failed_exports': []
+    }
+    
+    for agency_name, (final_df, annuaire_df, bank_annuaire_df) in final_agency_data.items():
+        try:
+            # Export agency data
+            filepath = export_agency_data_to_excel(
+                agency_name, final_df, annuaire_df, bank_annuaire_df, output_dir
+            )
+            
+            exported_files[agency_name] = filepath
+            export_summary['total_transactions'] += len(final_df)
+            export_summary['successful_exports'] += 1
+            
+        except Exception as e:
+            logger.error(f"Failed to export {agency_name}: {str(e)}")
+            export_summary['failed_exports'].append(agency_name)
+            # Don't raise immediately, try to export other agencies first
+    
+    # Final validation
+    if export_summary['failed_exports']:
+        failed_agencies = ', '.join(export_summary['failed_exports'])
+        raise ValueError(f"Failed to export agencies: {failed_agencies}")
+    
+    logger.info(f"✅ All agency exports completed successfully:")
+    logger.info(f"  - {export_summary['successful_exports']} agencies exported")
+    logger.info(f"  - {export_summary['total_transactions']} total transactions")
+    logger.info(f"  - Files saved to: {output_dir}")
+    
+    return exported_files
+
+
+def create_master_summary_file(
+    final_agency_data: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
+    exported_files: Dict[str, str],
+    output_dir: str = "."
+) -> str:
+    """
+    Create a master summary Excel file with overview of all agencies.
+    
+    Args:
+        final_agency_data: Dictionary of finalized agency data
+        exported_files: Dictionary of exported file paths
+        output_dir: Directory to save the file
+    
+    Returns:
+        Path to the master summary file
+    """
+    master_filepath = Path(output_dir) / "SARA_Master_Summary_28_07_2025.xlsx"
+    
+    logger.info(f"Creating master summary file: {master_filepath}")
+    
+    try:
+        with pd.ExcelWriter(master_filepath, engine='xlsxwriter') as writer:
+            # Agency overview sheet
+            overview_data = []
+            for agency_name, (final_df, annuaire_df, bank_annuaire_df) in final_agency_data.items():
+                if len(final_df) > 0:
+                    transaction_types = final_df['Type transaction'].value_counts()
+                    overview_data.append({
+                        'Agency': agency_name.upper(),
+                        'Total_Transactions': len(final_df),
+                        'Versement_bancaire': transaction_types.get('Versement bancaire', 0),
+                        'Approvisionement': transaction_types.get('Approvisionement', 0),
+                        'Depot': transaction_types.get('Dépot', 0),
+                        'Retrait': transaction_types.get('Retrait', 0),
+                        'Decharge': transaction_types.get('Décharge', 0),
+                        'Unique_Wallets': len(annuaire_df),
+                        'Bank_Accounts': len(bank_annuaire_df),
+                        'Date_Range_Start': final_df['Date transaction'].min(),
+                        'Date_Range_End': final_df['Date transaction'].max(),
+                        'Excel_File': exported_files.get(agency_name, 'N/A')
+                    })
+            
+            overview_df = pd.DataFrame(overview_data)
+            overview_df.to_excel(writer, sheet_name='Agency_Overview', index=False)
+            
+            # Combined transaction types summary
+            all_transaction_types = {}
+            total_transactions = 0
+            
+            for agency_name, (final_df, _, _) in final_agency_data.items():
+                if len(final_df) > 0:
+                    transaction_types = final_df['Type transaction'].value_counts()
+                    for trans_type, count in transaction_types.items():
+                        all_transaction_types[trans_type] = all_transaction_types.get(trans_type, 0) + count
+                    total_transactions += len(final_df)
+            
+            summary_data = {
+                'Transaction_Type': list(all_transaction_types.keys()),
+                'Total_Count': list(all_transaction_types.values()),
+                'Percentage': [round(count/total_transactions*100, 2) for count in all_transaction_types.values()]
+            }
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name='Transaction_Summary', index=False)
+            
+            # Export info sheet
+            export_info = pd.DataFrame({
+                'Export_Date': [pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')],
+                'Total_Agencies': [len(final_agency_data)],
+                'Total_Transactions': [total_transactions],
+                'Output_Directory': [output_dir],
+                'Pipeline_Version': ['Production v1.0']
+            })
+            export_info.to_excel(writer, sheet_name='Export_Info', index=False)
+        
+        logger.info(f"✅ Master summary file created: {master_filepath}")
+        return str(master_filepath)
+        
+    except Exception as e:
+        logger.error(f"Failed to create master summary: {str(e)}")
+        raise ValueError(f"Master summary creation failed: {str(e)}")
+
+
 if __name__ == "__main__":
     # Example usage
     try:
@@ -1088,6 +1312,12 @@ if __name__ == "__main__":
         # Finalize data (column ordering and sorting)
         final_agency_data = finalize_all_agency_data(agency_solde_data)
         
+        # Export data to Excel files
+        exported_files = export_all_agency_data(final_agency_data)
+        
+        # Create master summary file
+        master_summary_file = create_master_summary_file(final_agency_data, exported_files)
+        
         print(f"Processing complete. Final dataset shape: {transactions.shape}")
         print(f"Original transaction types: {transactions['Type transaction'].value_counts()}")
         print("\nFinal agency transaction breakdown:")
@@ -1099,6 +1329,13 @@ if __name__ == "__main__":
                 print(f"  Final columns: {len(final_df.columns)} (standardized format)")
                 print(f"  Wallet directory: {len(annuaire_df)} entries")
                 print(f"  Bank directory: {len(bank_annuaire_df)} entries")
+        
+        print(f"\n📁 Export Summary:")
+        print(f"✅ {len(exported_files)} agency files exported successfully")
+        print(f"✅ Master summary file: {master_summary_file}")
+        print("\nExported files:")
+        for agency_name, filepath in exported_files.items():
+            print(f"  - {agency_name.upper()}: {filepath}")
         
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}")
