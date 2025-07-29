@@ -18,6 +18,7 @@ from pathlib import Path
 import warnings
 import smtplib
 import os
+import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -1477,9 +1478,23 @@ def send_sara_report_email(
             logger.info("  - SARA_EMAIL_RECIPIENTS: Comma-separated recipient emails")
             return False
         
-        # Create email subject and body
-        current_date = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')
-        subject = f"SARA Transaction Processing Report - {current_date}"
+        # Extract date from filename (format: transactions_hop_28_07_2025.xlsx)
+        # Get the first file to extract the date
+        first_file = list(exported_files.values())[0] if exported_files else master_summary_file
+        filename = os.path.basename(first_file)
+        
+        # Extract date from filename pattern: transactions_xxx_DD_MM_YYYY.xlsx
+        date_match = re.search(r'(\d{2}_\d{2}_\d{4})', filename)
+        if date_match:
+            date_str = date_match.group(1)
+            # Convert from DD_MM_YYYY to DD/MM/YYYY format
+            report_date = date_str.replace('_', '/')
+        else:
+            # Fallback to current date if pattern not found
+            report_date = pd.Timestamp.now().strftime('%d/%m/%Y')
+        
+        # Create email subject with extracted date
+        subject = f"Reporting SARA - {report_date}"
         
         # Prepare attachment list
         attachment_paths = [master_summary_file]
@@ -1488,7 +1503,8 @@ def send_sara_report_email(
         # Filter existing files only
         existing_attachments = [path for path in attachment_paths if os.path.exists(path)]
         
-        # Create HTML email body
+        # Create professional French email body
+        current_time = pd.Timestamp.now().strftime('%d/%m/%Y à %H:%M')
         total_transactions = processing_stats.get('total_transactions', 0) if processing_stats else 0
         total_agencies = len(exported_files)
         
@@ -1496,67 +1512,59 @@ def send_sara_report_email(
         <html>
         <head>
             <style>
-                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-                .header {{ background-color: #2c5aa0; color: white; padding: 20px; text-align: center; }}
-                .content {{ padding: 20px; }}
-                .stats {{ background-color: #f4f4f4; padding: 15px; border-radius: 5px; margin: 20px 0; }}
-                .files {{ background-color: #e8f4fd; padding: 15px; border-radius: 5px; }}
-                .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; }}
-                .success {{ color: #28a745; font-weight: bold; }}
-                ul {{ list-style-type: none; padding-left: 0; }}
-                li {{ margin: 5px 0; padding: 5px; background-color: #f8f9fa; border-left: 3px solid #2c5aa0; }}
+                body {{ font-family: Arial, sans-serif; line-height: 1.8; color: #333; margin: 20px; }}
+                .greeting {{ font-size: 16px; margin-bottom: 20px; }}
+                .content {{ margin: 20px 0; }}
+                .summary {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }}
+                .files {{ background-color: #e8f4fd; padding: 15px; border-radius: 5px; margin: 15px 0; }}
+                .footer {{ margin-top: 30px; font-size: 12px; color: #666; }}
+                ul {{ padding-left: 20px; }}
+                li {{ margin: 5px 0; }}
             </style>
         </head>
         <body>
-            <div class="header">
-                <h2>🎯 SARA Transaction Processing Report</h2>
-                <p>Automated Report Generation - {current_date}</p>
+            <div class="greeting">
+                <p>Bonsoir cher partenaire,</p>
+                <p>Trouvez ci-joint le reporting de vos transactions pour la journée indiquée en objet.</p>
             </div>
             
             <div class="content">
-                <h3>📊 Processing Summary</h3>
-                <div class="stats">
-                    <p><strong>✅ Processing Status:</strong> <span class="success">Completed Successfully</span></p>
-                    <p><strong>🏢 Agencies Processed:</strong> {total_agencies}</p>
-                    <p><strong>📈 Total Transactions:</strong> {total_transactions:,}</p>
-                    <p><strong>📁 Files Generated:</strong> {len(existing_attachments)}</p>
-                    <p><strong>🕐 Generation Time:</strong> {current_date}</p>
+                <div class="summary">
+                    <h4>📊 Résumé du traitement :</h4>
+                    <ul>
+                        <li><strong>Date de traitement :</strong> {report_date}</li>
+                        <li><strong>Nombre d'agences :</strong> {total_agencies}</li>
+                        <li><strong>Total des transactions :</strong> {total_transactions:,}</li>
+                        <li><strong>Fichiers générés :</strong> {len(existing_attachments)}</li>
+                        <li><strong>Heure de génération :</strong> {current_time}</li>
+                    </ul>
                 </div>
                 
-                <h3>📋 Agency Breakdown</h3>
-                <ul>
-        """
+                <div class="files">
+                    <h4>📎 Fichiers joints :</h4>
+                    <ul>
+                        <li><strong>Résumé général :</strong> {os.path.basename(master_summary_file)}</li>"""
         
-        # Add agency details
+        # Add individual agency files
         for agency_name, filepath in exported_files.items():
             filename = os.path.basename(filepath)
             file_size = os.path.getsize(filepath) / 1024  # KB
-            body += f"<li><strong>{agency_name.upper()}</strong> - {filename} ({file_size:.1f} KB)</li>"
+            body += f"<li><strong>{agency_name.upper()} :</strong> {filename} ({file_size:.1f} Ko)</li>"
+        
+        total_size_mb = sum(os.path.getsize(f) for f in existing_attachments)/1024/1024
         
         body += f"""
-                </ul>
-                
-                <h3>📎 Attached Files</h3>
-                <div class="files">
-                    <p><strong>Master Summary:</strong> {os.path.basename(master_summary_file)}</p>
-                    <p><strong>Agency Reports:</strong> {len(exported_files)} individual Excel files</p>
-                    <p><strong>Total Size:</strong> {sum(os.path.getsize(f) for f in existing_attachments)/1024/1024:.2f} MB</p>
+                    </ul>
+                    <p><strong>Taille totale :</strong> {total_size_mb:.2f} Mo</p>
                 </div>
                 
-                <div class="stats">
-                    <h4>🔍 Data Quality Checks</h4>
-                    <p>✅ Schema validation passed</p>
-                    <p>✅ Agency identification completed</p>
-                    <p>✅ Transaction categorization successful</p>
-                    <p>✅ Data integrity validated</p>
-                </div>
-                
-                <p><strong>Note:</strong> All files are in Excel format with multiple sheets including transaction data, wallet directories, and bank directories.</p>
+                <p>Tous les fichiers sont au format Excel avec plusieurs feuilles incluant les données de transaction, les annuaires de portefeuilles et les annuaires bancaires.</p>
             </div>
             
             <div class="footer">
-                <p>This is an automated report generated by SARA Pipeline v1.0</p>
-                <p>Generated on {current_date}</p>
+                <p>Cordialement,<br>
+                L'équipe SARA<br>
+                <em>Rapport généré automatiquement le {current_time}</em></p>
             </div>
         </body>
         </html>
@@ -1613,6 +1621,8 @@ if __name__ == "__main__":
         # Create master summary file
         master_summary_file = create_master_summary_file(final_agency_data, exported_files)
         
+        logger.info("✅ All files generated successfully. Proceeding to email notification...")
+        
         # Prepare processing statistics for email
         total_transactions = sum(len(final_df) for final_df, _, _ in final_agency_data.values())
         processing_stats = {
@@ -1621,7 +1631,7 @@ if __name__ == "__main__":
             'processing_date': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Send email with generated files (optional - gracefully handles missing config)
+        # Send email with generated files (only after successful file generation)
         email_sent = send_sara_report_email(exported_files, master_summary_file, processing_stats)
         
         print(f"Processing complete. Final dataset shape: {transactions.shape}")
