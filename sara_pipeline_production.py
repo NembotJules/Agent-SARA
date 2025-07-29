@@ -326,6 +326,254 @@ def create_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df_processed
 
 
+# ============================================================================
+# AGENCY IDENTIFICATION FUNCTIONS
+# ============================================================================
+
+class AgencyIdentifier:
+    """
+    Contains all agency identification functions and constants
+    """
+    
+    # Super agent names
+    HOP_SUPER_AGENT = 'HOP SERVICESARL'
+    EXPRESS_UNION_SUPER_AGENT = 'EXPRESS UNIONSA'
+    EMI_MONEY_SUPER_AGENT = 'EMI MONEY SARL'
+    MULTISERVICE_SUPER_AGENT = 'MULTI-SERVICE SARL'
+    INSTANT_TRANSFER_SUPER_AGENT = 'INSTANTTRANSFER SARL'
+    
+    @staticmethod
+    def is_hop_agency(name: str) -> bool:
+        """
+        Check if a name matches HOP agency patterns.
+        
+        Args:
+            name: Agency name to check
+            
+        Returns:
+            True if name matches HOP patterns
+        """
+        if not isinstance(name, str):
+            return False
+        name = name.strip().upper()
+        return (name.startswith('HOP') or 
+                name == 'HOP SERVICESARL' or
+                name == 'ALBINEHOP' or 
+                name == 'DTN NANGA NANGA JUNIORHOP SIEGE DCM')
+    
+    @staticmethod
+    def is_emi_money_agency(name: str) -> bool:
+        """
+        Check if a name matches EMI Money agency patterns.
+        
+        Args:
+            name: Agency name to check
+            
+        Returns:
+            True if name matches EMI Money patterns
+        """
+        if not isinstance(name, str):
+            return False
+        name = name.strip()
+        patterns = ['Emi money', 'EMI MONEY', 'Sarl Emi', 'Sarl Emi money', 'EMI MONEY SARL']
+        return any(pattern in name for pattern in patterns)
+    
+    @staticmethod
+    def is_express_union_agency(name: str) -> bool:
+        """
+        Check if a name matches Express Union agency patterns.
+        
+        Args:
+            name: Agency name to check
+            
+        Returns:
+            True if name matches Express Union patterns
+        """
+        if not isinstance(name, str):
+            return False
+        name = name.strip()
+        return name.startswith('EU ') or name.startswith('EUF ') or name == 'EXPRESS UNIONSA'
+    
+    @staticmethod
+    def is_instant_transfer_agency(name: str) -> bool:
+        """
+        Check if a name matches Instant Transfer agency patterns.
+        
+        Args:
+            name: Agency name to check
+            
+        Returns:
+            True if name matches Instant Transfer patterns
+        """
+        if not isinstance(name, str):
+            return False
+        name = name.strip()
+        return name.startswith('IT ') or name == 'INSTANTTRANSFER SARL'
+    
+    @staticmethod
+    def is_multiservice_agency(name: str) -> bool:
+        """
+        Check if a name matches Multi-Service agency patterns.
+        
+        Args:
+            name: Agency name to check
+            
+        Returns:
+            True if name matches Multi-Service patterns
+        """
+        if not isinstance(name, str):
+            return False
+        name = name.strip()
+        # Check if name starts with 'MS ' or contains 'MULTI-SERVICE'
+        if name.startswith('MS ') or 'MULTI-SERVICE' in name.upper():
+            return True
+        # Check for isolated 'MS' in the name
+        words = name.split()
+        if 'MS' in words:
+            return True
+        return False
+    
+    @staticmethod
+    def is_muffa_agency(name: str) -> bool:
+        """
+        Check if a name matches Muffa agency patterns.
+        
+        Args:
+            name: Agency name to check
+            
+        Returns:
+            True if name matches Muffa patterns
+        """
+        if not isinstance(name, str):
+            return False
+        name = name.strip().upper()
+        return name.startswith('MUFFA')
+    
+    @staticmethod
+    def is_call_box_agency(name: str) -> bool:
+        """
+        Check if a name matches Call Box agency patterns.
+        
+        Args:
+            name: Agency name to check
+            
+        Returns:
+            True if name matches Call Box patterns
+        """
+        if not isinstance(name, str):
+            return False
+        name = name.strip().upper()
+        return name.startswith('CB')
+    
+    @staticmethod
+    def is_any_agency(name: str) -> bool:
+        """
+        Check if a name matches any agency pattern.
+        
+        Args:
+            name: Agency name to check
+            
+        Returns:
+            True if name matches any agency pattern
+        """
+        return (AgencyIdentifier.is_hop_agency(name) or 
+                AgencyIdentifier.is_emi_money_agency(name) or 
+                AgencyIdentifier.is_express_union_agency(name) or 
+                AgencyIdentifier.is_instant_transfer_agency(name) or
+                AgencyIdentifier.is_multiservice_agency(name) or 
+                AgencyIdentifier.is_muffa_agency(name) or 
+                AgencyIdentifier.is_call_box_agency(name))
+
+
+def filter_transactions_by_agency(df: pd.DataFrame, agency_check_func, agency_name: str) -> pd.DataFrame:
+    """
+    Filter transactions where either sender or receiver matches agency pattern.
+    
+    Args:
+        df: Transactions dataframe
+        agency_check_func: Function to check if name belongs to agency
+        agency_name: Name of agency for logging
+    
+    Returns:
+        Filtered dataframe containing only transactions involving the agency
+    """
+    logger.info(f"Filtering transactions for {agency_name} agency")
+    
+    # Get transactions where either sender or receiver matches agency pattern
+    agency_transactions = df[
+        (df['Nom portefeuille expediteur'].apply(agency_check_func)) |
+        (df['Nom portefeuille destinataire'].apply(agency_check_func))
+    ].copy()
+    
+    logger.info(f"{agency_name} transactions found: {len(agency_transactions)} out of {len(df)} total")
+    
+    # Validate filtered dataframe maintains structure
+    if len(agency_transactions) > 0:
+        expected_cols = len(df.columns)
+        if len(agency_transactions.columns) != expected_cols:
+            raise ValueError(f"{agency_name} filtered dataframe has {len(agency_transactions.columns)} columns, expected {expected_cols}")
+    
+    return agency_transactions
+
+
+def identify_all_agency_transactions(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    """
+    Identify and separate transactions for all agency types.
+    
+    Args:
+        df: Combined transactions dataframe
+    
+    Returns:
+        Dictionary of agency dataframes
+    """
+    logger.info("Identifying transactions for all agency types")
+    
+    agency_dataframes = {}
+    
+    # Filter transactions for each agency type
+    agency_dataframes['hop'] = filter_transactions_by_agency(
+        df, AgencyIdentifier.is_hop_agency, "HOP"
+    )
+    
+    agency_dataframes['emi_money'] = filter_transactions_by_agency(
+        df, AgencyIdentifier.is_emi_money_agency, "EMI Money"
+    )
+    
+    agency_dataframes['express_union'] = filter_transactions_by_agency(
+        df, AgencyIdentifier.is_express_union_agency, "Express Union"
+    )
+    
+    agency_dataframes['instant_transfer'] = filter_transactions_by_agency(
+        df, AgencyIdentifier.is_instant_transfer_agency, "Instant Transfer"
+    )
+    
+    agency_dataframes['multiservice'] = filter_transactions_by_agency(
+        df, AgencyIdentifier.is_multiservice_agency, "Multi-Service"
+    )
+    
+    agency_dataframes['muffa'] = filter_transactions_by_agency(
+        df, AgencyIdentifier.is_muffa_agency, "Muffa"
+    )
+    
+    agency_dataframes['call_box'] = filter_transactions_by_agency(
+        df, AgencyIdentifier.is_call_box_agency, "Call Box"
+    )
+    
+    # Log summary
+    total_agency_transactions = sum(len(agency_df) for agency_df in agency_dataframes.values())
+    logger.info(f"Total agency transactions identified: {total_agency_transactions}")
+    
+    # Check for transactions not captured by any agency
+    all_agency_indices = set()
+    for agency_df in agency_dataframes.values():
+        all_agency_indices.update(agency_df.index)
+    
+    non_agency_transactions = df[~df.index.isin(all_agency_indices)]
+    logger.info(f"Transactions not captured by any agency: {len(non_agency_transactions)}")
+    
+    return agency_dataframes
+
+
 if __name__ == "__main__":
     # Example usage
     try:
@@ -344,8 +592,14 @@ if __name__ == "__main__":
         # Create datetime columns
         transactions = create_datetime_columns(transactions)
         
+        # Identify agency transactions
+        agency_transactions = identify_all_agency_transactions(transactions)
+        
         print(f"Processing complete. Final dataset shape: {transactions.shape}")
         print(f"Transaction types: {transactions['Type transaction'].value_counts()}")
+        print("\nAgency transaction breakdown:")
+        for agency_name, agency_df in agency_transactions.items():
+            print(f"- {agency_name.upper()}: {len(agency_df)} transactions")
         
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}")
