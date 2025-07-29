@@ -42,13 +42,13 @@ class DataSchema:
         'Montant transaction', 
         'Solde expediteur apres transaction',
         'Compte bancaire destinataire',
+        'Nom destinataire',
         'Numero porte feuille destinataire',
         'Nom portefeuille destinataire', 
-        'Solde destinataire avant transaction', 
+                'Solde destinataire avant transaction', 
         'Solde destinataire apres transaction',
         'Type canal', 
-        'Statut transaction', 
-        'Nom destinataire'
+        'Statut transaction'
     ]
     
     # Final output columns order
@@ -166,8 +166,20 @@ def clean_transaction_data(agent_df: pd.DataFrame, customer_df: pd.DataFrame) ->
     
     Returns:
         Tuple of cleaned dataframes
+    
+    Raises:
+        ValueError: If dataframes don't have expected number of columns
     """
     logger.info("Cleaning transaction data")
+    
+    # Validate input dataframes have expected number of columns
+    expected_cols = len(DataSchema.TRANSACTION_COLUMNS)
+    if len(agent_df.columns) != expected_cols:
+        raise ValueError(f"Agent dataframe has {len(agent_df.columns)} columns, expected {expected_cols}")
+    if len(customer_df.columns) != expected_cols:
+        raise ValueError(f"Customer dataframe has {len(customer_df.columns)} columns, expected {expected_cols}")
+    
+    logger.info(f"Input validation passed - Both dataframes have {expected_cols} columns")
     
     # Create copies to avoid modifying originals
     agent_clean = agent_df.copy()
@@ -182,6 +194,14 @@ def clean_transaction_data(agent_df: pd.DataFrame, customer_df: pd.DataFrame) ->
     # Remove trailing spaces from string columns
     agent_clean = _remove_trailing_spaces(agent_clean)
     customer_clean = _remove_trailing_spaces(customer_clean)
+    
+    # Final validation - ensure cleaned dataframes still have correct number of columns
+    if len(agent_clean.columns) != expected_cols:
+        raise ValueError(f"Cleaned agent dataframe has {len(agent_clean.columns)} columns, expected {expected_cols}")
+    if len(customer_clean.columns) != expected_cols:
+        raise ValueError(f"Cleaned customer dataframe has {len(customer_clean.columns)} columns, expected {expected_cols}")
+    
+    logger.info(f"Cleaning validation passed - Both cleaned dataframes have {expected_cols} columns")
     
     return agent_clean, customer_clean
 
@@ -209,17 +229,45 @@ def combine_transactions(agent_df: pd.DataFrame, customer_df: pd.DataFrame) -> p
     
     Returns:
         Combined and filtered transactions dataframe
+    
+    Raises:
+        ValueError: If combination validation fails
     """
     logger.info("Combining transaction dataframes")
+    
+    # Store original counts for validation
+    original_agent_rows = len(agent_df)
+    original_customer_rows = len(customer_df)
+    expected_total_rows = original_agent_rows + original_customer_rows
+    expected_cols = len(DataSchema.TRANSACTION_COLUMNS)
+    
+    logger.info(f"Input dataframes - Agent: {original_agent_rows} rows, Customer: {original_customer_rows} rows")
     
     # Concatenate dataframes
     combined_df = pd.concat([agent_df, customer_df], ignore_index=True)
     logger.info(f"Combined dataframe shape: {combined_df.shape}")
     
+    # Validation checks
+    if len(combined_df.columns) != expected_cols:
+        raise ValueError(f"Combined dataframe has {len(combined_df.columns)} columns, expected {expected_cols}")
+    
+    if len(combined_df) != expected_total_rows:
+        raise ValueError(f"Combined dataframe has {len(combined_df)} rows, expected {expected_total_rows} (sum of input dataframes)")
+    
+    logger.info(f"Combination validation passed - {len(combined_df)} rows = {original_agent_rows} + {original_customer_rows}")
+    
     # Filter for relevant transaction types
     relevant_types = ['CASH_IN', 'CASH_OUT', 'WALLET_TO_WALLET']
+    rows_before_filter = len(combined_df)
     combined_df = combined_df[combined_df['Type transaction'].isin(relevant_types)]
+    rows_after_filter = len(combined_df)
+    
     logger.info(f"After filtering for relevant types: {combined_df.shape}")
+    logger.info(f"Filtered out {rows_before_filter - rows_after_filter} rows with irrelevant transaction types")
+    
+    # Final validation - ensure filtered dataframe still has correct number of columns
+    if len(combined_df.columns) != expected_cols:
+        raise ValueError(f"Filtered combined dataframe has {len(combined_df.columns)} columns, expected {expected_cols}")
     
     return combined_df
 
@@ -233,9 +281,18 @@ def create_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
     
     Returns:
         DataFrame with 'Date transaction' and 'Heure transaction' columns
+    
+    Raises:
+        ValueError: If datetime processing affects expected column count
     """
     logger.info("Creating date and time columns")
     
+    # Validate input has expected columns
+    expected_input_cols = len(DataSchema.TRANSACTION_COLUMNS)
+    if len(df.columns) != expected_input_cols:
+        raise ValueError(f"Input dataframe has {len(df.columns)} columns, expected {expected_input_cols}")
+    
+    original_rows = len(df)
     df_processed = df.copy()
     
     # Create date and time columns
@@ -255,7 +312,17 @@ def create_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
         .fillna(0).astype(int).astype(str)
     )
     
-    logger.info("Date/time columns created successfully")
+    # Validation checks
+    # After dropping 'Date heure' and adding 'Date transaction' and 'Heure transaction', 
+    # we should have expected_input_cols - 1 + 2 = expected_input_cols + 1 columns
+    expected_output_cols = expected_input_cols + 1
+    if len(df_processed.columns) != expected_output_cols:
+        raise ValueError(f"Output dataframe has {len(df_processed.columns)} columns, expected {expected_output_cols}")
+    
+    if len(df_processed) != original_rows:
+        raise ValueError(f"Row count changed during datetime processing: {len(df_processed)} vs {original_rows}")
+    
+    logger.info(f"Date/time columns created successfully - {expected_output_cols} columns, {len(df_processed)} rows")
     return df_processed
 
 
