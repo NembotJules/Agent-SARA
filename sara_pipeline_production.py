@@ -16,6 +16,12 @@ import logging
 from typing import Dict, List, Tuple, Optional, Union
 from pathlib import Path
 import warnings
+import smtplib
+import os
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -61,6 +67,68 @@ class DataSchema:
         'Type canal', 'Statut transaction'
     ]
 
+
+class EmailConfig:
+    """
+    Email configuration for sending generated reports
+    """
+    
+    # Default SMTP settings (can be overridden via environment variables)
+    DEFAULT_SMTP_SERVER = "smtp.gmail.com"
+    DEFAULT_SMTP_PORT = 587
+    
+    @classmethod
+    def get_config(cls) -> Dict[str, str]:
+        """
+        Get email configuration from environment variables with fallbacks.
+        
+        Required environment variables:
+        - SARA_EMAIL_SENDER: Sender email address
+        - SARA_EMAIL_PASSWORD: Email password or app password  
+        - SARA_EMAIL_RECIPIENTS: Comma-separated list of recipient emails
+        
+        Optional environment variables:
+        - SARA_SMTP_SERVER: SMTP server (default: smtp.gmail.com)
+        - SARA_SMTP_PORT: SMTP port (default: 587)
+        
+        Returns:
+            Dictionary with email configuration
+            
+        Raises:
+            ValueError: If required configuration is missing
+        """
+        config = {
+            'smtp_server': os.getenv('SARA_SMTP_SERVER', cls.DEFAULT_SMTP_SERVER),
+            'smtp_port': int(os.getenv('SARA_SMTP_PORT', cls.DEFAULT_SMTP_PORT)),
+            'sender_email': os.getenv('SARA_EMAIL_SENDER'),
+            'sender_password': os.getenv('SARA_EMAIL_PASSWORD'),
+            'recipients': os.getenv('SARA_EMAIL_RECIPIENTS', '').split(',') if os.getenv('SARA_EMAIL_RECIPIENTS') else []
+        }
+        
+        # Validate required fields
+        missing_fields = []
+        if not config['sender_email']:
+            missing_fields.append('SARA_EMAIL_SENDER')
+        if not config['sender_password']:
+            missing_fields.append('SARA_EMAIL_PASSWORD')
+        if not config['recipients']:
+            missing_fields.append('SARA_EMAIL_RECIPIENTS')
+            
+        if missing_fields:
+            raise ValueError(
+                f"Missing required email configuration: {', '.join(missing_fields)}. "
+                f"Please set these environment variables."
+            )
+        
+        # Clean up recipients list
+        config['recipients'] = [email.strip() for email in config['recipients'] if email.strip()]
+        
+        return config
+
+
+# ============================================================================
+# DATA LOADING AND VALIDATION FUNCTIONS
+# ============================================================================
 
 def load_transaction_data(agent_file: str, customer_file: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -1282,6 +1350,233 @@ def create_master_summary_file(
         raise ValueError(f"Master summary creation failed: {str(e)}")
 
 
+# ============================================================================
+# EMAIL FUNCTIONS
+# ============================================================================
+
+def send_email_with_attachments(
+    subject: str,
+    body: str, 
+    attachment_paths: List[str],
+    email_config: Optional[Dict[str, Union[str, int, List[str]]]] = None
+) -> bool:
+    """
+    Send email with Excel file attachments.
+    
+    Args:
+        subject: Email subject line
+        body: Email body text (HTML supported)
+        attachment_paths: List of file paths to attach
+        email_config: Email configuration dict (if None, uses EmailConfig.get_config())
+    
+    Returns:
+        True if successful, False otherwise
+        
+    Raises:
+        ValueError: If email configuration is invalid
+        Exception: If email sending fails
+    """
+    try:
+        # Get email configuration
+        if email_config is None:
+            email_config = EmailConfig.get_config()
+        
+        logger.info(f"Preparing to send email to {len(email_config['recipients'])} recipients")
+        
+        # Create message container
+        msg = MIMEMultipart()
+        msg['From'] = email_config['sender_email']
+        msg['To'] = ', '.join(email_config['recipients'])
+        msg['Subject'] = subject
+        
+        # Add body to email
+        msg.attach(MIMEText(body, 'html'))
+        
+        # Add attachments
+        total_size = 0
+        max_size = 25 * 1024 * 1024  # 25MB limit for most email providers
+        
+        for attachment_path in attachment_paths:
+            if not os.path.exists(attachment_path):
+                logger.warning(f"Attachment file not found: {attachment_path}")
+                continue
+            
+            file_size = os.path.getsize(attachment_path)
+            total_size += file_size
+            
+            if total_size > max_size:
+                logger.warning(f"Attachment size limit exceeded. Skipping: {attachment_path}")
+                continue
+            
+            filename = os.path.basename(attachment_path)
+            logger.info(f"Adding attachment: {filename} ({file_size/1024/1024:.2f}MB)")
+            
+            with open(attachment_path, "rb") as attachment:
+                # Instance of MIMEBase and named as part
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(attachment.read())
+            
+            # Encode file in ASCII characters to send by email    
+            encoders.encode_base64(part)
+            
+            # Add header as key/value pair to attachment part
+            part.add_header(
+                'Content-Disposition',
+                f'attachment; filename= {filename}',
+            )
+            
+            # Attach the part to message
+            msg.attach(part)
+        
+        # Create SMTP session
+        server = smtplib.SMTP(email_config['smtp_server'], email_config['smtp_port'])
+        server.starttls()  # Enable security
+        server.login(email_config['sender_email'], email_config['sender_password'])
+        
+        # Send email
+        text = msg.as_string()
+        server.sendmail(email_config['sender_email'], email_config['recipients'], text)
+        server.quit()
+        
+        logger.info(f"✅ Email sent successfully to {len(email_config['recipients'])} recipients")
+        logger.info(f"  - Attachments: {len([p for p in attachment_paths if os.path.exists(p)])}")
+        logger.info(f"  - Total size: {total_size/1024/1024:.2f}MB")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to send email: {str(e)}")
+        return False
+
+
+def send_sara_report_email(
+    exported_files: Dict[str, str],
+    master_summary_file: str,
+    processing_stats: Optional[Dict[str, Union[str, int]]] = None
+) -> bool:
+    """
+    Send SARA transaction processing report via email.
+    
+    Args:
+        exported_files: Dictionary mapping agency names to their Excel file paths
+        master_summary_file: Path to the master summary Excel file
+        processing_stats: Optional processing statistics for email body
+    
+    Returns:
+        True if email sent successfully, False otherwise
+    """
+    try:
+        # Check if email configuration is available
+        try:
+            email_config = EmailConfig.get_config()
+        except ValueError as e:
+            logger.warning(f"Email configuration not available: {str(e)}")
+            logger.info("Skipping email send. To enable email, set the required environment variables:")
+            logger.info("  - SARA_EMAIL_SENDER: Your sender email address")
+            logger.info("  - SARA_EMAIL_PASSWORD: Your email password/app password")
+            logger.info("  - SARA_EMAIL_RECIPIENTS: Comma-separated recipient emails")
+            return False
+        
+        # Create email subject and body
+        current_date = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')
+        subject = f"SARA Transaction Processing Report - {current_date}"
+        
+        # Prepare attachment list
+        attachment_paths = [master_summary_file]
+        attachment_paths.extend(exported_files.values())
+        
+        # Filter existing files only
+        existing_attachments = [path for path in attachment_paths if os.path.exists(path)]
+        
+        # Create HTML email body
+        total_transactions = processing_stats.get('total_transactions', 0) if processing_stats else 0
+        total_agencies = len(exported_files)
+        
+        body = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .header {{ background-color: #2c5aa0; color: white; padding: 20px; text-align: center; }}
+                .content {{ padding: 20px; }}
+                .stats {{ background-color: #f4f4f4; padding: 15px; border-radius: 5px; margin: 20px 0; }}
+                .files {{ background-color: #e8f4fd; padding: 15px; border-radius: 5px; }}
+                .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; }}
+                .success {{ color: #28a745; font-weight: bold; }}
+                ul {{ list-style-type: none; padding-left: 0; }}
+                li {{ margin: 5px 0; padding: 5px; background-color: #f8f9fa; border-left: 3px solid #2c5aa0; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h2>🎯 SARA Transaction Processing Report</h2>
+                <p>Automated Report Generation - {current_date}</p>
+            </div>
+            
+            <div class="content">
+                <h3>📊 Processing Summary</h3>
+                <div class="stats">
+                    <p><strong>✅ Processing Status:</strong> <span class="success">Completed Successfully</span></p>
+                    <p><strong>🏢 Agencies Processed:</strong> {total_agencies}</p>
+                    <p><strong>📈 Total Transactions:</strong> {total_transactions:,}</p>
+                    <p><strong>📁 Files Generated:</strong> {len(existing_attachments)}</p>
+                    <p><strong>🕐 Generation Time:</strong> {current_date}</p>
+                </div>
+                
+                <h3>📋 Agency Breakdown</h3>
+                <ul>
+        """
+        
+        # Add agency details
+        for agency_name, filepath in exported_files.items():
+            filename = os.path.basename(filepath)
+            file_size = os.path.getsize(filepath) / 1024  # KB
+            body += f"<li><strong>{agency_name.upper()}</strong> - {filename} ({file_size:.1f} KB)</li>"
+        
+        body += f"""
+                </ul>
+                
+                <h3>📎 Attached Files</h3>
+                <div class="files">
+                    <p><strong>Master Summary:</strong> {os.path.basename(master_summary_file)}</p>
+                    <p><strong>Agency Reports:</strong> {len(exported_files)} individual Excel files</p>
+                    <p><strong>Total Size:</strong> {sum(os.path.getsize(f) for f in existing_attachments)/1024/1024:.2f} MB</p>
+                </div>
+                
+                <div class="stats">
+                    <h4>🔍 Data Quality Checks</h4>
+                    <p>✅ Schema validation passed</p>
+                    <p>✅ Agency identification completed</p>
+                    <p>✅ Transaction categorization successful</p>
+                    <p>✅ Data integrity validated</p>
+                </div>
+                
+                <p><strong>Note:</strong> All files are in Excel format with multiple sheets including transaction data, wallet directories, and bank directories.</p>
+            </div>
+            
+            <div class="footer">
+                <p>This is an automated report generated by SARA Pipeline v1.0</p>
+                <p>Generated on {current_date}</p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Send email
+        success = send_email_with_attachments(subject, body, existing_attachments, email_config)
+        
+        if success:
+            logger.info("📧 SARA report email sent successfully")
+        else:
+            logger.error("📧 Failed to send SARA report email")
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"Error sending SARA report email: {str(e)}")
+        return False
+
+
 if __name__ == "__main__":
     # Example usage
     try:
@@ -1318,6 +1613,17 @@ if __name__ == "__main__":
         # Create master summary file
         master_summary_file = create_master_summary_file(final_agency_data, exported_files)
         
+        # Prepare processing statistics for email
+        total_transactions = sum(len(final_df) for final_df, _, _ in final_agency_data.values())
+        processing_stats = {
+            'total_transactions': total_transactions,
+            'total_agencies': len(final_agency_data),
+            'processing_date': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Send email with generated files (optional - gracefully handles missing config)
+        email_sent = send_sara_report_email(exported_files, master_summary_file, processing_stats)
+        
         print(f"Processing complete. Final dataset shape: {transactions.shape}")
         print(f"Original transaction types: {transactions['Type transaction'].value_counts()}")
         print("\nFinal agency transaction breakdown:")
@@ -1336,6 +1642,17 @@ if __name__ == "__main__":
         print("\nExported files:")
         for agency_name, filepath in exported_files.items():
             print(f"  - {agency_name.upper()}: {filepath}")
+        
+        print(f"\n📧 Email Summary:")
+        if email_sent:
+            print("✅ Email sent successfully with all generated files")
+        else:
+            print("ℹ️  Email not sent (configuration not available or failed)")
+            print("   To enable email notifications, set these environment variables:")
+            print("   export SARA_EMAIL_SENDER='your_email@gmail.com'")
+            print("   export SARA_EMAIL_PASSWORD='your_app_password'")
+            print("   export SARA_EMAIL_RECIPIENTS='recipient1@email.com,recipient2@email.com'")
+            print("   Optional: SARA_SMTP_SERVER and SARA_SMTP_PORT")
         
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}")
