@@ -587,12 +587,31 @@ def identify_all_agency_transactions(df: pd.DataFrame) -> Dict[str, pd.DataFrame
     
     # Check for transactions not captured by any agency
     all_agency_indices = set()
-    for agency_df in agency_dataframes.values():
-        all_agency_indices.update(agency_df.index)
+    overlapping_indices = set()
+    
+    # Track overlaps
+    for agency_name, agency_df in agency_dataframes.items():
+        agency_indices = set(agency_df.index)
+        # Check for overlaps with previously seen indices
+        overlap_with_existing = agency_indices.intersection(all_agency_indices)
+        if overlap_with_existing:
+            overlapping_indices.update(overlap_with_existing)
+            logger.warning(f"{agency_name} has {len(overlap_with_existing)} overlapping transactions")
+        
+        all_agency_indices.update(agency_indices)
+    
+    # Count unique transactions
+    unique_agency_transactions = len(all_agency_indices)
+    if overlapping_indices:
+        logger.warning(f"Found {len(overlapping_indices)} transactions counted in multiple agencies")
+        logger.warning(f"Unique agency transactions: {unique_agency_transactions} (vs {total_agency_transactions} total)")
     
     non_agency_transactions = df[~df.index.isin(all_agency_indices)]
     non_agency_count = len(non_agency_transactions)
     logger.info(f"Transactions not captured by any agency: {non_agency_count}")
+    
+    # Update validation to use unique count
+    total_agency_transactions = unique_agency_transactions
     
     # CRITICAL VALIDATION 1: Sum of agency transactions should equal number of AGENT transactions
     if total_agency_transactions != agent_transactions_count:
