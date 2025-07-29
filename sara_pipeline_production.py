@@ -835,6 +835,229 @@ def categorize_all_agency_transactions(agency_dataframes: Dict[str, pd.DataFrame
     return categorized_dataframes
 
 
+# ============================================================================
+# SOLDE COLUMNS CREATION FUNCTIONS
+# ============================================================================
+
+def create_solde_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Creates unified agent perspective columns for all agency types.
+    Transforms transaction data to show everything from the agency's perspective.
+    
+    Args:
+        df: DataFrame containing categorized agency transactions
+    
+    Returns:
+        Tuple of (processed_df, annuaire_df, bank_annuaire_df)
+        - processed_df: DataFrame with agency-centric columns
+        - annuaire_df: Directory of wallet name/number mappings
+        - bank_annuaire_df: Directory of bank account mappings
+    
+    Raises:
+        ValueError: If input validation fails
+    """
+    logger.info("Creating agency-centric solde columns")
+    
+    # Validate input
+    if len(df) == 0:
+        logger.warning("Empty dataframe provided for solde column creation")
+        return df.copy(), pd.DataFrame(), pd.DataFrame()
+    
+    original_shape = df.shape
+    
+    # Helper function to check if a name belongs to any agency type
+    def is_any_agency(name):
+        return (AgencyIdentifier.is_hop_agency(name) or 
+                AgencyIdentifier.is_emi_money_agency(name) or 
+                AgencyIdentifier.is_express_union_agency(name) or 
+                AgencyIdentifier.is_instant_transfer_agency(name) or
+                AgencyIdentifier.is_multiservice_agency(name) or 
+                AgencyIdentifier.is_muffa_agency(name) or 
+                AgencyIdentifier.is_call_box_agency(name))
+    
+    # Create annuaire (directory) with unique Nom/Numero pairs
+    expediteur_pairs = df[['Nom portefeuille expediteur', 'Numero porte feuille expediteur']].rename(
+        columns={'Nom portefeuille expediteur': 'Nom portefeuille', 
+                'Numero porte feuille expediteur': 'Numero portefeuille'}
+    )
+    destinataire_pairs = df[['Nom portefeuille destinataire', 'Numero porte feuille destinataire']].rename(
+        columns={'Nom portefeuille destinataire': 'Nom portefeuille',
+                'Numero porte feuille destinataire': 'Numero portefeuille'}
+    )
+    annuaire_df = pd.concat([expediteur_pairs, destinataire_pairs]).drop_duplicates().dropna()
+    logger.info(f"Created wallet directory with {len(annuaire_df)} unique wallet mappings")
+
+    # Create bank annuaire for bank accounts
+    bank_annuaire = df[['Nom destinataire', 'Compte bancaire destinataire']].dropna().drop_duplicates()
+    logger.info(f"Created bank directory with {len(bank_annuaire)} unique bank account mappings")
+
+    # Create new agency-centric columns
+    df_processed = df.copy()
+    df_processed['Nom portefeuille'] = None
+    df_processed['Numero portefeuille'] = None
+    df_processed['Solde avant transaction'] = None
+    df_processed['Solde après transaction'] = None
+    df_processed['Partenaire transaction'] = None
+    df_processed['Numero portefeuille partenaire transaction'] = None
+    df_processed['Compte bancaire partenaire'] = None
+
+    # Case 1: When agency is expediteur (sender)
+    expediteur_mask = df_processed['Nom portefeuille expediteur'].apply(is_any_agency)
+    expediteur_count = expediteur_mask.sum()
+    
+    df_processed.loc[expediteur_mask, 'Nom portefeuille'] = df_processed.loc[expediteur_mask, 'Nom portefeuille expediteur']
+    df_processed.loc[expediteur_mask, 'Numero portefeuille'] = df_processed.loc[expediteur_mask, 'Numero porte feuille expediteur']
+    df_processed.loc[expediteur_mask, 'Solde avant transaction'] = df_processed.loc[expediteur_mask, 'Solde expediteur avant transaction']
+    df_processed.loc[expediteur_mask, 'Solde après transaction'] = df_processed.loc[expediteur_mask, 'Solde expediteur apres transaction']
+    df_processed.loc[expediteur_mask, 'Partenaire transaction'] = df_processed.loc[expediteur_mask, 'Nom portefeuille destinataire']
+    df_processed.loc[expediteur_mask, 'Numero portefeuille partenaire transaction'] = df_processed.loc[expediteur_mask, 'Numero porte feuille destinataire']
+    
+    # Add bank account info when available (for expediteur case)
+    bank_mask_exp = expediteur_mask & df_processed['Compte bancaire destinataire'].notna()
+    df_processed.loc[bank_mask_exp, 'Compte bancaire partenaire'] = df_processed.loc[bank_mask_exp, 'Compte bancaire destinataire']
+    df_processed.loc[bank_mask_exp, 'Partenaire transaction'] = df_processed.loc[bank_mask_exp, 'Nom destinataire']
+
+    # Case 2: When agency is destinataire (receiver)
+    destinataire_mask = df_processed['Nom portefeuille destinataire'].apply(is_any_agency)
+    destinataire_count = destinataire_mask.sum()
+    
+    df_processed.loc[destinataire_mask, 'Nom portefeuille'] = df_processed.loc[destinataire_mask, 'Nom portefeuille destinataire']
+    df_processed.loc[destinataire_mask, 'Numero portefeuille'] = df_processed.loc[destinataire_mask, 'Numero porte feuille destinataire']
+    df_processed.loc[destinataire_mask, 'Solde avant transaction'] = df_processed.loc[destinataire_mask, 'Solde destinataire avant transaction']
+    df_processed.loc[destinataire_mask, 'Solde après transaction'] = df_processed.loc[destinataire_mask, 'Solde destinataire apres transaction']
+    df_processed.loc[destinataire_mask, 'Partenaire transaction'] = df_processed.loc[destinataire_mask, 'Nom portefeuille expediteur']
+    df_processed.loc[destinataire_mask, 'Numero portefeuille partenaire transaction'] = df_processed.loc[destinataire_mask, 'Numero porte feuille expediteur']
+
+    logger.info(f"Agency perspective applied: {expediteur_count} as sender, {destinataire_count} as receiver")
+
+    # Sort by wallet name and date/time to see progression
+    df_processed = df_processed.sort_values(['Nom portefeuille', 'Date transaction', 'Heure transaction'])
+
+    # Drop old columns that are no longer needed
+    columns_to_drop = [
+        'Nom portefeuille expediteur', 'Nom portefeuille destinataire',
+        'Solde expediteur avant transaction', 'Solde expediteur apres transaction', 
+        'Solde destinataire avant transaction', 'Solde destinataire apres transaction',
+        'Numero porte feuille expediteur', 'Numero porte feuille destinataire',
+        'Compte bancaire destinataire', 'Nom destinataire'
+    ]
+    df_processed = df_processed.drop(columns=columns_to_drop)
+
+    # Final validation
+    expected_cols = original_shape[1] - len(columns_to_drop) + 7  # Dropped 10, added 7
+    if len(df_processed.columns) != expected_cols:
+        raise ValueError(f"Column count mismatch after solde creation: expected {expected_cols}, got {len(df_processed.columns)}")
+    
+    if len(df_processed) != original_shape[0]:
+        raise ValueError(f"Row count changed during solde creation: {original_shape[0]} -> {len(df_processed)}")
+
+    logger.info(f"✅ Solde columns created successfully: {len(df_processed)} rows, {len(df_processed.columns)} columns")
+
+    return df_processed, annuaire_df, bank_annuaire
+
+
+def create_solde_columns_for_all_agencies(categorized_dataframes: Dict[str, pd.DataFrame]) -> Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
+    """
+    Apply solde column creation to all agency dataframes.
+    
+    Args:
+        categorized_dataframes: Dictionary of categorized agency dataframes
+    
+    Returns:
+        Dictionary with agency names as keys and (processed_df, annuaire_df, bank_annuaire_df) tuples as values
+        
+    Raises:
+        ValueError: If solde creation fails for any agency
+    """
+    logger.info("Creating solde columns for all agencies")
+    
+    processed_agencies = {}
+    
+    for agency_name, agency_df in categorized_dataframes.items():
+        try:
+            processed_df, annuaire_df, bank_annuaire_df = create_solde_columns(agency_df)
+            processed_agencies[agency_name] = (processed_df, annuaire_df, bank_annuaire_df)
+            logger.info(f"✅ Solde columns created for {agency_name}: {len(processed_df)} transactions")
+            
+        except Exception as e:
+            logger.error(f"Failed to create solde columns for {agency_name}: {str(e)}")
+            raise ValueError(f"Solde creation failed for {agency_name}: {str(e)}")
+    
+    # Validation: ensure total transaction count is preserved
+    original_total = sum(len(df) for df in categorized_dataframes.values())
+    processed_total = sum(len(result[0]) for result in processed_agencies.values())
+    
+    if original_total != processed_total:
+        raise ValueError(f"Transaction count mismatch after solde creation: {original_total} -> {processed_total}")
+    
+    logger.info(f"✅ All agency solde columns created. Total transactions: {processed_total}")
+    
+    return processed_agencies
+
+
+def reorder_final_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Reorder columns to match the final expected output format.
+    
+    Args:
+        df: DataFrame with agency-centric columns
+    
+    Returns:
+        DataFrame with columns in final order
+        
+    Raises:
+        ValueError: If expected columns are missing
+    """
+    # Get available columns that match our expected final columns
+    available_final_columns = [col for col in DataSchema.FINAL_COLUMNS_ORDER if col in df.columns]
+    
+    # Check for missing expected columns
+    missing_columns = [col for col in DataSchema.FINAL_COLUMNS_ORDER if col not in df.columns]
+    if missing_columns:
+        logger.warning(f"Missing expected final columns: {missing_columns}")
+    
+    # Reorder to final format
+    df_final = df[available_final_columns].copy()
+    
+    logger.info(f"Reordered to final format: {len(available_final_columns)} columns")
+    
+    return df_final
+
+
+def finalize_all_agency_data(processed_agencies: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]) -> Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
+    """
+    Apply final column ordering and sorting to all agency dataframes.
+    
+    Args:
+        processed_agencies: Dictionary of processed agency data
+    
+    Returns:
+        Dictionary with finalized agency dataframes
+    """
+    logger.info("Finalizing all agency dataframes")
+    
+    finalized_agencies = {}
+    
+    for agency_name, (processed_df, annuaire_df, bank_annuaire_df) in processed_agencies.items():
+        try:
+            # Reorder columns
+            final_df = reorder_final_columns(processed_df)
+            
+            # Sort by agency name, date, and time
+            final_df = final_df.sort_values(['Nom portefeuille', 'Date transaction', 'Heure transaction'])
+            
+            finalized_agencies[agency_name] = (final_df, annuaire_df, bank_annuaire_df)
+            logger.info(f"✅ Finalized {agency_name}: {len(final_df)} transactions with {len(final_df.columns)} columns")
+            
+        except Exception as e:
+            logger.error(f"Failed to finalize {agency_name}: {str(e)}")
+            raise ValueError(f"Finalization failed for {agency_name}: {str(e)}")
+    
+    logger.info("✅ All agency dataframes finalized")
+    
+    return finalized_agencies
+
+
 if __name__ == "__main__":
     # Example usage
     try:
@@ -859,14 +1082,23 @@ if __name__ == "__main__":
         # Categorize agency transactions
         categorized_agency_transactions = categorize_all_agency_transactions(agency_transactions)
         
+        # Create solde columns (agency-centric perspective)
+        agency_solde_data = create_solde_columns_for_all_agencies(categorized_agency_transactions)
+        
+        # Finalize data (column ordering and sorting)
+        final_agency_data = finalize_all_agency_data(agency_solde_data)
+        
         print(f"Processing complete. Final dataset shape: {transactions.shape}")
         print(f"Original transaction types: {transactions['Type transaction'].value_counts()}")
-        print("\nAgency transaction breakdown:")
-        for agency_name, agency_df in categorized_agency_transactions.items():
-            print(f"- {agency_name.upper()}: {len(agency_df)} transactions")
-            if len(agency_df) > 0:
-                transaction_types = agency_df['Type transaction'].value_counts()
+        print("\nFinal agency transaction breakdown:")
+        for agency_name, (final_df, annuaire_df, bank_annuaire_df) in final_agency_data.items():
+            print(f"- {agency_name.upper()}: {len(final_df)} transactions")
+            if len(final_df) > 0:
+                transaction_types = final_df['Type transaction'].value_counts()
                 print(f"  Transaction types: {dict(transaction_types)}")
+                print(f"  Final columns: {len(final_df.columns)} (standardized format)")
+                print(f"  Wallet directory: {len(annuaire_df)} entries")
+                print(f"  Bank directory: {len(bank_annuaire_df)} entries")
         
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}")
