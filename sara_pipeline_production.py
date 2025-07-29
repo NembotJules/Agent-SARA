@@ -647,6 +647,194 @@ def identify_all_agency_transactions(df: pd.DataFrame) -> Dict[str, pd.DataFrame
     return agency_dataframes
 
 
+# ============================================================================
+# TRANSACTION CATEGORIZATION FUNCTIONS
+# ============================================================================
+
+def categorize_transactions(df: pd.DataFrame, is_agency_func, super_agent: str = None) -> pd.DataFrame:
+    """
+    Categorizes transactions based on type and participants.
+    
+    Args:
+        df: DataFrame containing transactions
+        is_agency_func: Function that takes a name and returns True if it belongs to the agency
+        super_agent: Name of the super agent (optional)
+        
+    Returns:
+        DataFrame with categorized transaction types
+    
+    Raises:
+        ValueError: If input validation fails
+    """
+    logger.info(f"Categorizing transactions for agency (super_agent: {super_agent})")
+    
+    # Validate input
+    if len(df) == 0:
+        logger.warning("Empty dataframe provided for categorization")
+        return df.copy()
+    
+    original_shape = df.shape
+    df_categorized = df.copy()
+    
+    # Replace basic transaction types
+    df_categorized['Type transaction'] = df_categorized['Type transaction'].replace({
+        'CASH_IN': 'Approvisionement',
+        'CASH_OUT': 'Versement bancaire'
+    })
+    
+    # Handle WALLET_TO_WALLET cases
+    wallet_mask = df_categorized['Type transaction'] == 'WALLET_TO_WALLET'
+    wallet_transactions = wallet_mask.sum()
+    logger.info(f"Processing {wallet_transactions} WALLET_TO_WALLET transactions")
+    
+    if wallet_transactions > 0:
+        # Case 1: From agency or super agent to non-agency (Dépot)
+        depot_mask = (
+            wallet_mask & 
+            ((df_categorized['Nom portefeuille expediteur'].apply(is_agency_func)) | 
+             (df_categorized['Nom portefeuille expediteur'] == super_agent if super_agent else False)) &
+            ~df_categorized['Nom portefeuille destinataire'].apply(is_agency_func)
+        )
+        depot_count = depot_mask.sum()
+        df_categorized.loc[depot_mask, 'Type transaction'] = 'Dépot'
+        
+        # Case 2: From non-agency and non-super agent to agency (Retrait)
+        retrait_mask = (
+            wallet_mask &
+            ~df_categorized['Nom portefeuille expediteur'].apply(is_agency_func) &
+            (df_categorized['Nom portefeuille expediteur'] != super_agent if super_agent else True) &
+            df_categorized['Nom portefeuille destinataire'].apply(is_agency_func)
+        )
+        retrait_count = retrait_mask.sum()
+        df_categorized.loc[retrait_mask, 'Type transaction'] = 'Retrait'
+        
+        # Super agent specific logic (only if super_agent is provided)
+        appro_count = 0
+        decharge_count = 0
+        if super_agent:
+            # Case 3: From super agent to its own agency type (Approvisionement)
+            appro_mask = (
+                wallet_mask &
+                (df_categorized['Nom portefeuille expediteur'] == super_agent) &
+                df_categorized['Nom portefeuille destinataire'].apply(is_agency_func)
+            )
+            appro_count = appro_mask.sum()
+            df_categorized.loc[appro_mask, 'Type transaction'] = 'Approvisionement'
+
+            # Case 4: From agency to its own super agent type (Décharge)
+            decharge_mask = (
+                wallet_mask &
+                df_categorized['Nom portefeuille expediteur'].apply(is_agency_func) &
+                (df_categorized['Nom portefeuille destinataire'] == super_agent)
+            )
+            decharge_count = decharge_mask.sum()
+            df_categorized.loc[decharge_mask, 'Type transaction'] = 'Décharge'
+
+        # Handle transactions between different types of agents (inter-agency)
+        inter_agency_mask = wallet_mask & (
+            df_categorized['Nom portefeuille expediteur'].apply(AgencyIdentifier.is_any_agency) &
+            df_categorized['Nom portefeuille destinataire'].apply(AgencyIdentifier.is_any_agency)
+        )
+        
+        # For inter-agency transactions, classify based on balance changes
+        # Money going out (balance decreases) = Dépot from perspective of sender
+        inter_depot_mask = (
+            inter_agency_mask &
+            (df_categorized['Solde expediteur avant transaction'] > df_categorized['Solde expediteur apres transaction'])
+        )
+        inter_depot_count = inter_depot_mask.sum()
+        df_categorized.loc[inter_depot_mask, 'Type transaction'] = 'Dépot'
+        
+        # Money coming in (balance increases) = Retrait from perspective of sender  
+        inter_retrait_mask = (
+            inter_agency_mask &
+            (df_categorized['Solde expediteur avant transaction'] < df_categorized['Solde expediteur apres transaction'])
+        )
+        inter_retrait_count = inter_retrait_mask.sum()
+        df_categorized.loc[inter_retrait_mask, 'Type transaction'] = 'Retrait'
+        
+        # Log categorization summary
+        logger.info(f"WALLET_TO_WALLET categorization summary:")
+        logger.info(f"  - Dépot: {depot_count + inter_depot_count}")
+        logger.info(f"  - Retrait: {retrait_count + inter_retrait_count}")
+        if super_agent:
+            logger.info(f"  - Approvisionement (super agent): {appro_count}")
+            logger.info(f"  - Décharge (super agent): {decharge_count}")
+    
+    # Final validation
+    if df_categorized.shape != original_shape:
+        raise ValueError(f"Shape changed during categorization: {original_shape} -> {df_categorized.shape}")
+    
+    # Check for remaining WALLET_TO_WALLET transactions
+    remaining_wallet = (df_categorized['Type transaction'] == 'WALLET_TO_WALLET').sum()
+    if remaining_wallet > 0:
+        logger.warning(f"{remaining_wallet} WALLET_TO_WALLET transactions could not be categorized")
+    
+    # Log final transaction type distribution
+    final_types = df_categorized['Type transaction'].value_counts()
+    logger.info(f"Final transaction types: {dict(final_types)}")
+    
+    return df_categorized
+
+
+def categorize_all_agency_transactions(agency_dataframes: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    """
+    Apply transaction categorization to all agency dataframes.
+    
+    Args:
+        agency_dataframes: Dictionary of agency dataframes
+    
+    Returns:
+        Dictionary of categorized agency dataframes
+        
+    Raises:
+        ValueError: If categorization fails for any agency
+    """
+    logger.info("Categorizing transactions for all agencies")
+    
+    categorized_dataframes = {}
+    
+    # Define agency functions and super agents
+    agency_configs = {
+        'hop': (AgencyIdentifier.is_hop_agency, AgencyIdentifier.HOP_SUPER_AGENT),
+        'emi_money': (AgencyIdentifier.is_emi_money_agency, None),  # No super agent
+        'express_union': (AgencyIdentifier.is_express_union_agency, AgencyIdentifier.EXPRESS_UNION_SUPER_AGENT),
+        'instant_transfer': (AgencyIdentifier.is_instant_transfer_agency, AgencyIdentifier.INSTANT_TRANSFER_SUPER_AGENT),
+        'multiservice': (AgencyIdentifier.is_multiservice_agency, AgencyIdentifier.MULTISERVICE_SUPER_AGENT),
+        'muffa': (AgencyIdentifier.is_muffa_agency, None),  # No super agent
+        'call_box': (AgencyIdentifier.is_call_box_agency, None)  # No super agent
+    }
+    
+    # Apply categorization to each agency
+    for agency_name, agency_df in agency_dataframes.items():
+        if agency_name not in agency_configs:
+            logger.warning(f"No configuration found for agency: {agency_name}")
+            categorized_dataframes[agency_name] = agency_df.copy()
+            continue
+            
+        is_agency_func, super_agent = agency_configs[agency_name]
+        
+        try:
+            categorized_df = categorize_transactions(agency_df, is_agency_func, super_agent)
+            categorized_dataframes[agency_name] = categorized_df
+            logger.info(f"✅ Categorization completed for {agency_name}: {len(categorized_df)} transactions")
+            
+        except Exception as e:
+            logger.error(f"Failed to categorize transactions for {agency_name}: {str(e)}")
+            raise ValueError(f"Categorization failed for {agency_name}: {str(e)}")
+    
+    # Validation: ensure total transaction count is preserved
+    original_total = sum(len(df) for df in agency_dataframes.values())
+    categorized_total = sum(len(df) for df in categorized_dataframes.values())
+    
+    if original_total != categorized_total:
+        raise ValueError(f"Transaction count mismatch after categorization: {original_total} -> {categorized_total}")
+    
+    logger.info(f"✅ All agency categorization completed. Total transactions: {categorized_total}")
+    
+    return categorized_dataframes
+
+
 if __name__ == "__main__":
     # Example usage
     try:
@@ -668,11 +856,17 @@ if __name__ == "__main__":
         # Identify agency transactions
         agency_transactions = identify_all_agency_transactions(transactions)
         
+        # Categorize agency transactions
+        categorized_agency_transactions = categorize_all_agency_transactions(agency_transactions)
+        
         print(f"Processing complete. Final dataset shape: {transactions.shape}")
-        print(f"Transaction types: {transactions['Type transaction'].value_counts()}")
+        print(f"Original transaction types: {transactions['Type transaction'].value_counts()}")
         print("\nAgency transaction breakdown:")
-        for agency_name, agency_df in agency_transactions.items():
+        for agency_name, agency_df in categorized_agency_transactions.items():
             print(f"- {agency_name.upper()}: {len(agency_df)} transactions")
+            if len(agency_df) > 0:
+                transaction_types = agency_df['Type transaction'].value_counts()
+                print(f"  Transaction types: {dict(transaction_types)}")
         
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}")
