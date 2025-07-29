@@ -45,7 +45,7 @@ class DataSchema:
         'Nom destinataire',
         'Numero porte feuille destinataire',
         'Nom portefeuille destinataire', 
-                'Solde destinataire avant transaction', 
+        'Solde destinataire avant transaction', 
         'Solde destinataire apres transaction',
         'Type canal', 
         'Statut transaction'
