@@ -525,8 +525,21 @@ def identify_all_agency_transactions(df: pd.DataFrame) -> Dict[str, pd.DataFrame
     
     Returns:
         Dictionary of agency dataframes
+    
+    Raises:
+        ValueError: If data integrity checks fail
     """
     logger.info("Identifying transactions for all agency types")
+    
+    # Count AGENT and CUSTOMER transactions for validation
+    agent_transactions_count = len(df[df['Type utilisateur transaction'] == 'AGENT'])
+    customer_transactions_count = len(df[df['Type utilisateur transaction'] == 'CUSTOMER'])
+    total_expected = agent_transactions_count + customer_transactions_count
+    
+    logger.info(f"Input validation - AGENT: {agent_transactions_count}, CUSTOMER: {customer_transactions_count}, Total: {total_expected}")
+    
+    if len(df) != total_expected:
+        raise ValueError(f"Unexpected user transaction types found. Expected {total_expected}, got {len(df)}")
     
     agency_dataframes = {}
     
@@ -559,7 +572,7 @@ def identify_all_agency_transactions(df: pd.DataFrame) -> Dict[str, pd.DataFrame
         df, AgencyIdentifier.is_call_box_agency, "Call Box"
     )
     
-    # Log summary
+    # Data integrity validation
     total_agency_transactions = sum(len(agency_df) for agency_df in agency_dataframes.values())
     logger.info(f"Total agency transactions identified: {total_agency_transactions}")
     
@@ -569,7 +582,39 @@ def identify_all_agency_transactions(df: pd.DataFrame) -> Dict[str, pd.DataFrame
         all_agency_indices.update(agency_df.index)
     
     non_agency_transactions = df[~df.index.isin(all_agency_indices)]
-    logger.info(f"Transactions not captured by any agency: {len(non_agency_transactions)}")
+    non_agency_count = len(non_agency_transactions)
+    logger.info(f"Transactions not captured by any agency: {non_agency_count}")
+    
+    # CRITICAL VALIDATION 1: Sum of agency transactions should equal number of AGENT transactions
+    if total_agency_transactions != agent_transactions_count:
+        raise ValueError(f"Agency transaction count mismatch! "
+                        f"Sum of agency transactions: {total_agency_transactions}, "
+                        f"Expected AGENT transactions: {agent_transactions_count}")
+    
+    logger.info(f"✅ Agency count validation passed: {total_agency_transactions} = {agent_transactions_count}")
+    
+    # CRITICAL VALIDATION 2: All non-agency transactions should be CUSTOMER transactions
+    non_agency_user_types = non_agency_transactions['Type utilisateur transaction'].unique()
+    if len(non_agency_user_types) != 1 or non_agency_user_types[0] != 'CUSTOMER':
+        raise ValueError(f"Non-agency transactions contain unexpected user types: {non_agency_user_types}. "
+                        f"Expected only 'CUSTOMER'")
+    
+    # Additional validation: Count should match
+    if non_agency_count != customer_transactions_count:
+        raise ValueError(f"Non-agency transaction count mismatch! "
+                        f"Non-agency transactions: {non_agency_count}, "
+                        f"Expected CUSTOMER transactions: {customer_transactions_count}")
+    
+    logger.info(f"✅ Customer count validation passed: {non_agency_count} = {customer_transactions_count}")
+    
+    # Final comprehensive validation
+    total_validated = total_agency_transactions + non_agency_count
+    if total_validated != len(df):
+        raise ValueError(f"Total validation failed! "
+                        f"Agency + Non-agency: {total_validated}, "
+                        f"Total input: {len(df)}")
+    
+    logger.info(f"✅ Complete validation passed: {total_agency_transactions} (agency) + {non_agency_count} (customer) = {total_validated} total")
     
     return agency_dataframes
 
