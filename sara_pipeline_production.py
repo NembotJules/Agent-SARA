@@ -488,6 +488,7 @@ class AgencyIdentifier:
 def filter_transactions_by_agency(df: pd.DataFrame, agency_check_func, agency_name: str) -> pd.DataFrame:
     """
     Filter transactions where either sender or receiver matches agency pattern.
+    Only considers AGENT transactions to avoid false positives from CUSTOMER wallet names.
     
     Args:
         df: Transactions dataframe
@@ -495,23 +496,31 @@ def filter_transactions_by_agency(df: pd.DataFrame, agency_check_func, agency_na
         agency_name: Name of agency for logging
     
     Returns:
-        Filtered dataframe containing only transactions involving the agency
+        Filtered dataframe containing only AGENT transactions involving the agency
     """
     logger.info(f"Filtering transactions for {agency_name} agency")
     
-    # Get transactions where either sender or receiver matches agency pattern
-    agency_transactions = df[
-        (df['Nom portefeuille expediteur'].apply(agency_check_func)) |
-        (df['Nom portefeuille destinataire'].apply(agency_check_func))
+    # First filter for AGENT transactions only
+    agent_transactions = df[df['Type utilisateur transaction'] == 'AGENT']
+    
+    # Then apply agency pattern matching
+    agency_transactions = agent_transactions[
+        (agent_transactions['Nom portefeuille expediteur'].apply(agency_check_func)) |
+        (agent_transactions['Nom portefeuille destinataire'].apply(agency_check_func))
     ].copy()
     
-    logger.info(f"{agency_name} transactions found: {len(agency_transactions)} out of {len(df)} total")
+    logger.info(f"{agency_name} transactions found: {len(agency_transactions)} out of {len(df)} total ({len(agency_transactions)} out of {len(agent_transactions)} AGENT transactions)")
     
     # Validate filtered dataframe maintains structure
     if len(agency_transactions) > 0:
         expected_cols = len(df.columns)
         if len(agency_transactions.columns) != expected_cols:
             raise ValueError(f"{agency_name} filtered dataframe has {len(agency_transactions.columns)} columns, expected {expected_cols}")
+        
+        # Validate all transactions are AGENT transactions
+        user_types = agency_transactions['Type utilisateur transaction'].unique()
+        if len(user_types) != 1 or user_types[0] != 'AGENT':
+            raise ValueError(f"{agency_name} filtered dataframe contains non-AGENT transactions: {user_types}")
     
     return agency_transactions
 
@@ -587,24 +596,6 @@ def identify_all_agency_transactions(df: pd.DataFrame) -> Dict[str, pd.DataFrame
     
     # CRITICAL VALIDATION 1: Sum of agency transactions should equal number of AGENT transactions
     if total_agency_transactions != agent_transactions_count:
-        # Debug the mismatch
-        logger.error(f"DEBUGGING AGENCY MISMATCH:")
-        logger.error(f"Expected AGENT transactions: {agent_transactions_count}")
-        logger.error(f"Sum of agency transactions: {total_agency_transactions}")
-        
-        # Check each agency's user types
-        for agency_name, agency_df in agency_dataframes.items():
-            if len(agency_df) > 0:
-                user_types = agency_df['Type utilisateur transaction'].value_counts()
-                logger.error(f"{agency_name}: {len(agency_df)} transactions - {dict(user_types)}")
-                
-                # Show specific names that might be problematic
-                if agency_name == 'hop':
-                    hop_senders = agency_df['Nom portefeuille expediteur'].unique()
-                    hop_receivers = agency_df['Nom portefeuille destinataire'].unique()
-                    logger.error(f"HOP senders: {hop_senders}")
-                    logger.error(f"HOP receivers: {hop_receivers}")
-        
         raise ValueError(f"Agency transaction count mismatch! "
                         f"Sum of agency transactions: {total_agency_transactions}, "
                         f"Expected AGENT transactions: {agent_transactions_count}")
