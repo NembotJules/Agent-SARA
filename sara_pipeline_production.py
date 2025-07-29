@@ -6,7 +6,7 @@ This module processes transaction data from various agencies and categorizes the
 for analysis. It handles data loading, cleaning, agency identification, and
 transaction categorization.
 
-Author: Generated from agent_sara.ipynb
+Author: Nembot Jules, DRI 
 """
 
 import numpy as np
@@ -21,7 +21,7 @@ import warnings
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Suppress openpyxl warnings
+# Suppress logging...
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 
@@ -49,21 +49,6 @@ class DataSchema:
         'Type canal', 
         'Statut transaction', 
         'Nom destinataire'
-    ]
-    
-    # Essential columns that must be present (minimal required columns)
-    ESSENTIAL_COLUMNS = [
-        'Date heure', 
-        'Reference transaction', 
-        'Type transaction',
-        'Type utilisateur transaction', 
-        'Statut transaction',
-        'Montant transaction'
-    ]
-    
-    # Expected columns for point of service data
-    POINT_SERVICE_COLUMNS = [
-        'Nom  porteur'  # Note: double space is intentional as per original data
     ]
     
     # Final output columns order
@@ -132,21 +117,20 @@ def _validate_and_filter_transaction_schema(df: pd.DataFrame, data_type: str) ->
         DataFrame with only expected columns
     
     Raises:
-        ValueError: If essential columns are missing
+        ValueError: If expected columns are missing
     """
     logger.info(f"Validating and filtering schema for {data_type} data")
     
     # Get all current columns
     current_columns = list(df.columns)
     
-    # Check for essential columns
-    missing_essential = [col for col in DataSchema.ESSENTIAL_COLUMNS if col not in current_columns]
-    
-    if missing_essential:
-        raise ValueError(f"Missing essential columns in {data_type} data: {missing_essential}")
-    
     # Find expected columns that exist in the dataframe
     available_expected_columns = [col for col in DataSchema.TRANSACTION_COLUMNS if col in current_columns]
+    
+    # Check if we're missing any expected columns
+    missing_expected = [col for col in DataSchema.TRANSACTION_COLUMNS if col not in available_expected_columns]
+    if missing_expected:
+        raise ValueError(f"Missing expected columns in {data_type} data: {missing_expected}")
     
     # Find unexpected columns (excluding Unnamed columns which we expect to remove)
     unexpected_columns = [col for col in current_columns 
@@ -163,16 +147,11 @@ def _validate_and_filter_transaction_schema(df: pd.DataFrame, data_type: str) ->
     if unnamed_columns:
         logger.debug(f"Removing unnamed columns from {data_type} data: {unnamed_columns}")
     
-    # Filter dataframe to keep only expected columns
-    filtered_df = df[available_expected_columns].copy()
-    
-    # Check if we're missing any expected columns
-    missing_expected = [col for col in DataSchema.TRANSACTION_COLUMNS if col not in available_expected_columns]
-    if missing_expected:
-        logger.warning(f"Expected columns not found in {data_type} data: {missing_expected}")
+    # Filter dataframe to keep only expected columns (in the order they appear in TRANSACTION_COLUMNS)
+    filtered_df = df[DataSchema.TRANSACTION_COLUMNS].copy()
     
     logger.info(f"Schema validation passed for {data_type} data")
-    logger.info(f"Kept {len(available_expected_columns)} expected columns, removed {len(current_columns) - len(available_expected_columns)} columns")
+    logger.info(f"Kept {len(DataSchema.TRANSACTION_COLUMNS)} expected columns, removed {len(current_columns) - len(DataSchema.TRANSACTION_COLUMNS)} columns")
     
     return filtered_df
 
