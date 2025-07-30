@@ -413,6 +413,29 @@ class AgencyIdentifier:
     INSTANT_TRANSFER_SUPER_AGENT = 'INSTANTTRANSFER SARL'
     
     @staticmethod
+    def is_super_agent(name: str) -> bool:
+        """
+        Check if a name matches any super agent.
+        
+        Args:
+            name: Name to check
+            
+        Returns:
+            True if name matches any super agent
+        """
+        if not isinstance(name, str):
+            return False
+        name = name.strip()
+        super_agents = [
+            AgencyIdentifier.HOP_SUPER_AGENT,
+            AgencyIdentifier.EXPRESS_UNION_SUPER_AGENT,
+            AgencyIdentifier.EMI_MONEY_SUPER_AGENT,
+            AgencyIdentifier.MULTISERVICE_SUPER_AGENT,
+            AgencyIdentifier.INSTANT_TRANSFER_SUPER_AGENT
+        ]
+        return name in super_agents
+    
+    @staticmethod
     def is_hop_agency(name: str) -> bool:
         """
         Check if a name matches HOP agency patterns.
@@ -1065,6 +1088,147 @@ def create_solde_columns_for_all_agencies(categorized_dataframes: Dict[str, pd.D
     return processed_agencies
 
 
+def fix_agent_super_agent_categorization(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fix categorization for transactions between regular agents and super agents.
+    
+    This function should be called AFTER create_solde_columns to work with the 
+    agency-centric view where we have "Nom portefeuille" and "Partenaire transaction".
+    
+    Logic:
+    - If "Nom portefeuille" is a regular agency AND "Partenaire transaction" is a super agent:
+      - If agent balance increases → "Recharge" (agent receives money from super agent)
+      - If agent balance decreases → "Décharge" (agent sends money to super agent)
+    
+    Args:
+        df: DataFrame with agency-centric columns already created
+    
+    Returns:
+        DataFrame with corrected transaction categorization
+        
+    Raises:
+        ValueError: If input validation fails
+    """
+    logger.info("Fixing agent-to-super-agent transaction categorization")
+    
+    # Validate input
+    if len(df) == 0:
+        logger.warning("Empty dataframe provided for agent-super-agent categorization fix")
+        return df.copy()
+    
+    required_columns = ['Nom portefeuille', 'Partenaire transaction', 'Solde avant transaction', 
+                       'Solde après transaction', 'Type transaction']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Missing required columns for agent-super-agent categorization: {missing_columns}")
+    
+    df_fixed = df.copy()
+    original_shape = df_fixed.shape
+    
+    # Identify transactions between regular agents and super agents
+    agent_super_mask = (
+        df_fixed['Nom portefeuille'].apply(AgencyIdentifier.is_any_agency) &
+        df_fixed['Partenaire transaction'].apply(AgencyIdentifier.is_super_agent) &
+        df_fixed['Nom portefeuille'].notna() &
+        df_fixed['Partenaire transaction'].notna()
+    )
+    
+    agent_super_transactions = agent_super_mask.sum()
+    logger.info(f"Found {agent_super_transactions} transactions between regular agents and super agents")
+    
+    if agent_super_transactions > 0:
+        # Convert balance columns to numeric for comparison
+        df_fixed['Solde avant transaction'] = pd.to_numeric(df_fixed['Solde avant transaction'], errors='coerce')
+        df_fixed['Solde après transaction'] = pd.to_numeric(df_fixed['Solde après transaction'], errors='coerce')
+        
+        # Mask for transactions where agent balance increased (Recharge)
+        recharge_mask = (
+            agent_super_mask &
+            (df_fixed['Solde après transaction'] > df_fixed['Solde avant transaction'])
+        )
+        recharge_count = recharge_mask.sum()
+        df_fixed.loc[recharge_mask, 'Type transaction'] = 'Recharge'
+        
+        # Mask for transactions where agent balance decreased (Décharge)  
+        decharge_mask = (
+            agent_super_mask &
+            (df_fixed['Solde après transaction'] < df_fixed['Solde avant transaction'])
+        )
+        decharge_count = decharge_mask.sum()
+        df_fixed.loc[decharge_mask, 'Type transaction'] = 'Décharge'
+        
+        # Handle edge case where balance stayed the same (rare)
+        no_change_mask = (
+            agent_super_mask &
+            (df_fixed['Solde après transaction'] == df_fixed['Solde avant transaction'])
+        )
+        no_change_count = no_change_mask.sum()
+        if no_change_count > 0:
+            logger.warning(f"Found {no_change_count} agent-super-agent transactions with no balance change")
+            # Keep original categorization for these
+        
+        logger.info(f"Fixed categorization: {recharge_count} Recharge, {decharge_count} Décharge")
+        
+        # Log some examples for verification
+        if recharge_count > 0:
+            sample_recharge = df_fixed[recharge_mask].head(2)[['Nom portefeuille', 'Partenaire transaction', 
+                                                              'Solde avant transaction', 'Solde après transaction', 
+                                                              'Type transaction']]
+            logger.info(f"Sample Recharge transactions:\n{sample_recharge.to_string()}")
+        
+        if decharge_count > 0:
+            sample_decharge = df_fixed[decharge_mask].head(2)[['Nom portefeuille', 'Partenaire transaction', 
+                                                              'Solde avant transaction', 'Solde après transaction', 
+                                                              'Type transaction']]
+            logger.info(f"Sample Décharge transactions:\n{sample_decharge.to_string()}")
+    
+    # Validate output shape
+    if df_fixed.shape != original_shape:
+        raise ValueError(f"Shape mismatch after agent-super-agent categorization fix: {original_shape} -> {df_fixed.shape}")
+    
+    logger.info(f"✅ Agent-super-agent categorization fixed successfully")
+    
+    return df_fixed
+
+
+def fix_all_agency_super_agent_categorization(processed_agencies: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]) -> Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
+    """
+    Apply agent-super-agent categorization fix to all agency dataframes.
+    
+    Args:
+        processed_agencies: Dictionary of agency dataframes with solde columns
+    
+    Returns:
+        Dictionary of agency dataframes with fixed categorization
+        
+    Raises:
+        ValueError: If categorization fix fails for any agency
+    """
+    logger.info("Fixing agent-super-agent categorization for all agencies")
+    
+    fixed_agencies = {}
+    original_total = sum(len(data[0]) for data in processed_agencies.values())
+    
+    for agency_name, (df, annuaire_df, bank_df) in processed_agencies.items():
+        try:
+            logger.info(f"Fixing categorization for {agency_name} ({len(df)} transactions)")
+            fixed_df = fix_agent_super_agent_categorization(df)
+            fixed_agencies[agency_name] = (fixed_df, annuaire_df, bank_df)
+            logger.info(f"✅ {agency_name} categorization fixed successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to fix categorization for {agency_name}: {e}")
+            raise ValueError(f"Categorization fix failed for {agency_name}: {e}")
+    
+    # Validate total transaction count
+    fixed_total = sum(len(data[0]) for data in fixed_agencies.values())
+    if original_total != fixed_total:
+        raise ValueError(f"Transaction count mismatch after categorization fix: {original_total} -> {fixed_total}")
+    
+    logger.info(f"✅ All agency categorization fixed. Total transactions: {fixed_total}")
+    
+    return fixed_agencies
+
+
 def reorder_final_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Reorder columns to match the final expected output format.
@@ -1691,8 +1855,11 @@ if __name__ == "__main__":
         # Create solde columns (agency-centric perspective)
         agency_solde_data = create_solde_columns_for_all_agencies(categorized_agency_transactions)
         
+        # Fix agent-to-super-agent categorization
+        fixed_agency_solde_data = fix_all_agency_super_agent_categorization(agency_solde_data)
+        
         # Finalize data (column ordering and sorting)
-        final_agency_data = finalize_all_agency_data(agency_solde_data)
+        final_agency_data = finalize_all_agency_data(fixed_agency_solde_data)
         
         # Export data to Excel files
         exported_files = export_all_agency_data(final_agency_data)
