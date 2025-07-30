@@ -436,6 +436,34 @@ class AgencyIdentifier:
         return name in super_agents
     
     @staticmethod
+    def get_super_agent_for_agency(agency_name: str) -> str:
+        """
+        Get the corresponding super agent for a given agency.
+        
+        Args:
+            agency_name: Name of the agency
+            
+        Returns:
+            Super agent name if found, None otherwise
+        """
+        if not isinstance(agency_name, str):
+            return None
+            
+        # Check each agency type and return its corresponding super agent
+        if AgencyIdentifier.is_hop_agency(agency_name):
+            return AgencyIdentifier.HOP_SUPER_AGENT
+        elif AgencyIdentifier.is_express_union_agency(agency_name):
+            return AgencyIdentifier.EXPRESS_UNION_SUPER_AGENT
+        elif AgencyIdentifier.is_emi_money_agency(agency_name):
+            return AgencyIdentifier.EMI_MONEY_SUPER_AGENT
+        elif AgencyIdentifier.is_multiservice_agency(agency_name):
+            return AgencyIdentifier.MULTISERVICE_SUPER_AGENT
+        elif AgencyIdentifier.is_instant_transfer_agency(agency_name):
+            return AgencyIdentifier.INSTANT_TRANSFER_SUPER_AGENT
+        else:
+            return None
+    
+    @staticmethod
     def is_hop_agency(name: str) -> bool:
         """
         Check if a name matches HOP agency patterns.
@@ -1090,15 +1118,17 @@ def create_solde_columns_for_all_agencies(categorized_dataframes: Dict[str, pd.D
 
 def fix_agent_super_agent_categorization(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Fix categorization for transactions between regular agents and super agents.
+    Fix categorization for transactions between regular agents and their corresponding super agents.
     
     This function should be called AFTER create_solde_columns to work with the 
     agency-centric view where we have "Nom portefeuille" and "Partenaire transaction".
     
-    Logic:
-    - If "Nom portefeuille" is a regular agency AND "Partenaire transaction" is a super agent:
-      - If agent balance increases → "Recharge" (agent receives money from super agent)
-      - If agent balance decreases → "Décharge" (agent sends money to super agent)
+    Logic (ONLY applies when agent and super agent are of the SAME type):
+    - If "Nom portefeuille" is a regular agency AND "Partenaire transaction" is ITS super agent:
+      - If agent balance increases → "Approvisionement" (agent receives money from its super agent)
+      - If agent balance decreases → "Décharge" (agent sends money to its super agent)
+    
+    Cross-agency transactions (e.g., EU agency → HOP super agent) use the old logic.
     
     Args:
         df: DataFrame with agency-centric columns already created
@@ -1109,7 +1139,7 @@ def fix_agent_super_agent_categorization(df: pd.DataFrame) -> pd.DataFrame:
     Raises:
         ValueError: If input validation fails
     """
-    logger.info("Fixing agent-to-super-agent transaction categorization")
+    logger.info("Fixing agent-to-super-agent transaction categorization (same type only)")
     
     # Validate input
     if len(df) == 0:
@@ -1125,33 +1155,44 @@ def fix_agent_super_agent_categorization(df: pd.DataFrame) -> pd.DataFrame:
     df_fixed = df.copy()
     original_shape = df_fixed.shape
     
-    # Identify transactions between regular agents and super agents
-    agent_super_mask = (
-        df_fixed['Nom portefeuille'].apply(AgencyIdentifier.is_any_agency) &
-        df_fixed['Partenaire transaction'].apply(AgencyIdentifier.is_super_agent) &
-        df_fixed['Nom portefeuille'].notna() &
-        df_fixed['Partenaire transaction'].notna()
-    )
+    # Identify transactions between regular agents and their corresponding super agents (same type only)
+    same_type_agent_super_mask = pd.Series([False] * len(df_fixed), index=df_fixed.index)
     
-    agent_super_transactions = agent_super_mask.sum()
-    logger.info(f"Found {agent_super_transactions} transactions between regular agents and super agents")
+    for idx, row in df_fixed.iterrows():
+        agency_name = row['Nom portefeuille']
+        partner_name = row['Partenaire transaction']
+        
+        # Skip if either name is missing
+        if pd.isna(agency_name) or pd.isna(partner_name):
+            continue
+            
+        # Check if this is an agency and get its corresponding super agent
+        if AgencyIdentifier.is_any_agency(agency_name):
+            expected_super_agent = AgencyIdentifier.get_super_agent_for_agency(agency_name)
+            
+            # Only apply logic if partner is the corresponding super agent for this agency type
+            if expected_super_agent and partner_name == expected_super_agent:
+                same_type_agent_super_mask.iloc[idx] = True
     
-    if agent_super_transactions > 0:
+    same_type_transactions = same_type_agent_super_mask.sum()
+    logger.info(f"Found {same_type_transactions} transactions between agents and their corresponding super agents")
+    
+    if same_type_transactions > 0:
         # Convert balance columns to numeric for comparison
         df_fixed['Solde avant transaction'] = pd.to_numeric(df_fixed['Solde avant transaction'], errors='coerce')
         df_fixed['Solde après transaction'] = pd.to_numeric(df_fixed['Solde après transaction'], errors='coerce')
         
-        # Mask for transactions where agent balance increased (Recharge)
-        recharge_mask = (
-            agent_super_mask &
+        # Mask for transactions where agent balance increased (Approvisionement)
+        appro_mask = (
+            same_type_agent_super_mask &
             (df_fixed['Solde après transaction'] > df_fixed['Solde avant transaction'])
         )
-        recharge_count = recharge_mask.sum()
-        df_fixed.loc[recharge_mask, 'Type transaction'] = 'Recharge'
+        appro_count = appro_mask.sum()
+        df_fixed.loc[appro_mask, 'Type transaction'] = 'Approvisionement'
         
         # Mask for transactions where agent balance decreased (Décharge)  
         decharge_mask = (
-            agent_super_mask &
+            same_type_agent_super_mask &
             (df_fixed['Solde après transaction'] < df_fixed['Solde avant transaction'])
         )
         decharge_count = decharge_mask.sum()
@@ -1159,28 +1200,42 @@ def fix_agent_super_agent_categorization(df: pd.DataFrame) -> pd.DataFrame:
         
         # Handle edge case where balance stayed the same (rare)
         no_change_mask = (
-            agent_super_mask &
+            same_type_agent_super_mask &
             (df_fixed['Solde après transaction'] == df_fixed['Solde avant transaction'])
         )
         no_change_count = no_change_mask.sum()
         if no_change_count > 0:
-            logger.warning(f"Found {no_change_count} agent-super-agent transactions with no balance change")
+            logger.warning(f"Found {no_change_count} same-type agent-super-agent transactions with no balance change")
             # Keep original categorization for these
         
-        logger.info(f"Fixed categorization: {recharge_count} Recharge, {decharge_count} Décharge")
+        logger.info(f"Fixed categorization: {appro_count} Approvisionement, {decharge_count} Décharge")
         
         # Log some examples for verification
-        if recharge_count > 0:
-            sample_recharge = df_fixed[recharge_mask].head(2)[['Nom portefeuille', 'Partenaire transaction', 
-                                                              'Solde avant transaction', 'Solde après transaction', 
-                                                              'Type transaction']]
-            logger.info(f"Sample Recharge transactions:\n{sample_recharge.to_string()}")
+        if appro_count > 0:
+            sample_appro = df_fixed[appro_mask].head(2)[['Nom portefeuille', 'Partenaire transaction', 
+                                                         'Solde avant transaction', 'Solde après transaction', 
+                                                         'Type transaction']]
+            logger.info(f"Sample Approvisionement transactions:\n{sample_appro.to_string()}")
         
         if decharge_count > 0:
             sample_decharge = df_fixed[decharge_mask].head(2)[['Nom portefeuille', 'Partenaire transaction', 
                                                               'Solde avant transaction', 'Solde après transaction', 
                                                               'Type transaction']]
             logger.info(f"Sample Décharge transactions:\n{sample_decharge.to_string()}")
+            
+        # Log cross-agency transactions that were NOT modified (for verification)
+        cross_agency_mask = (
+            df_fixed['Nom portefeuille'].apply(AgencyIdentifier.is_any_agency) &
+            df_fixed['Partenaire transaction'].apply(AgencyIdentifier.is_super_agent) &
+            ~same_type_agent_super_mask &
+            df_fixed['Nom portefeuille'].notna() &
+            df_fixed['Partenaire transaction'].notna()
+        )
+        cross_agency_count = cross_agency_mask.sum()
+        if cross_agency_count > 0:
+            logger.info(f"Found {cross_agency_count} cross-agency transactions (using old logic)")
+            sample_cross = df_fixed[cross_agency_mask].head(2)[['Nom portefeuille', 'Partenaire transaction', 'Type transaction']]
+            logger.info(f"Sample cross-agency transactions:\n{sample_cross.to_string()}")
     
     # Validate output shape
     if df_fixed.shape != original_shape:
