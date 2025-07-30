@@ -1156,23 +1156,25 @@ def fix_agent_super_agent_categorization(df: pd.DataFrame) -> pd.DataFrame:
     original_shape = df_fixed.shape
     
     # Identify transactions between regular agents and their corresponding super agents (same type only)
-    same_type_agent_super_mask = pd.Series([False] * len(df_fixed), index=df_fixed.index)
-    
-    for idx, row in df_fixed.iterrows():
-        agency_name = row['Nom portefeuille']
-        partner_name = row['Partenaire transaction']
-        
-        # Skip if either name is missing
+    def is_same_type_agent_super_transaction(agency_name, partner_name):
+        """Check if this is a same-type agent-super-agent transaction"""
         if pd.isna(agency_name) or pd.isna(partner_name):
-            continue
+            return False
             
         # Check if this is an agency and get its corresponding super agent
         if AgencyIdentifier.is_any_agency(agency_name):
             expected_super_agent = AgencyIdentifier.get_super_agent_for_agency(agency_name)
             
             # Only apply logic if partner is the corresponding super agent for this agency type
-            if expected_super_agent and partner_name == expected_super_agent:
-                same_type_agent_super_mask.iloc[idx] = True
+            return expected_super_agent and partner_name == expected_super_agent
+        
+        return False
+    
+    # Apply the check vectorized
+    same_type_agent_super_mask = df_fixed.apply(
+        lambda row: is_same_type_agent_super_transaction(row['Nom portefeuille'], row['Partenaire transaction']), 
+        axis=1
+    )
     
     same_type_transactions = same_type_agent_super_mask.sum()
     logger.info(f"Found {same_type_transactions} transactions between agents and their corresponding super agents")
