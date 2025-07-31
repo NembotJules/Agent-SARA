@@ -156,8 +156,8 @@ def load_transaction_data(agent_file: str, customer_file: str) -> Tuple[pd.DataF
         raise FileNotFoundError(f"Customer file not found: {customer_file}")
     
     try:
-        # Load agent transactions (header at row 3, 0-indexed)
-        agent_df = pd.read_excel(agent_file, header=3, engine='openpyxl')
+        # Load agent transactions (header at row 1, 0-indexed)
+        agent_df = pd.read_excel(agent_file, header=1, engine='openpyxl')
         logger.info(f"Loaded agent data: {agent_df.shape}")
         
         # Load customer transactions (header at row 1, 0-indexed)  
@@ -1331,6 +1331,12 @@ def finalize_all_agency_data(processed_agencies: Dict[str, Tuple[pd.DataFrame, p
     
     for agency_name, (processed_df, annuaire_df, bank_annuaire_df) in processed_agencies.items():
         try:
+            # Skip empty dataframes
+            if len(processed_df) == 0:
+                logger.warning(f"Skipping empty dataframe for {agency_name}")
+                finalized_agencies[agency_name] = (processed_df, annuaire_df, bank_annuaire_df)
+                continue
+                
             # Reorder columns
             final_df = reorder_final_columns(processed_df)
             
@@ -1350,6 +1356,33 @@ def finalize_all_agency_data(processed_agencies: Dict[str, Tuple[pd.DataFrame, p
 
 
 # ============================================================================
+# DATE EXTRACTION UTILITY
+# ============================================================================
+
+def extract_date_from_filename(filename: str) -> str:
+    """
+    Extract date from filename in format: AGENT_DD_MM_YYYY.xlsx or CUSTOMER_DD_MM_YYYY.xlsx
+    
+    Args:
+        filename: Input filename
+    
+    Returns:
+        Date string in format DD_MM_YYYY
+    
+    Raises:
+        ValueError: If date pattern not found
+    """
+    # Pattern to match date in format DD_MM_YYYY
+    date_pattern = r'(\d{2}_\d{2}_\d{4})'
+    match = re.search(date_pattern, filename)
+    
+    if match:
+        return match.group(1)
+    else:
+        raise ValueError(f"Could not extract date from filename: {filename}")
+
+
+# ============================================================================
 # DATA EXPORT FUNCTIONS
 # ============================================================================
 
@@ -1358,6 +1391,7 @@ def export_agency_data_to_excel(
     final_df: pd.DataFrame, 
     annuaire_df: pd.DataFrame, 
     bank_annuaire_df: pd.DataFrame,
+    date_str: str,
     output_dir: str = "."
 ) -> str:
     """
@@ -1368,6 +1402,7 @@ def export_agency_data_to_excel(
         final_df: Finalized agency transactions dataframe
         annuaire_df: Wallet directory dataframe
         bank_annuaire_df: Bank directory dataframe
+        date_str: Date string in format DD_MM_YYYY
         output_dir: Directory to save the file (default: current directory)
     
     Returns:
@@ -1376,8 +1411,8 @@ def export_agency_data_to_excel(
     Raises:
         ValueError: If export fails
     """
-    # Create filename following the original naming convention
-    filename = f"transactions_{agency_name}_28_07_2025.xlsx"
+    # Create filename with dynamic date
+    filename = f"transactions_{agency_name}_{date_str}.xlsx"
     filepath = Path(output_dir) / filename
     
     logger.info(f"Exporting {agency_name} data to {filepath}")
@@ -1433,6 +1468,7 @@ def export_agency_data_to_excel(
 
 def export_all_agency_data(
     final_agency_data: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
+    date_str: str,
     output_dir: str = "."
 ) -> Dict[str, str]:
     """
@@ -1440,6 +1476,7 @@ def export_all_agency_data(
     
     Args:
         final_agency_data: Dictionary of finalized agency data
+        date_str: Date string in format DD_MM_YYYY
         output_dir: Directory to save files (default: current directory)
     
     Returns:
@@ -1466,7 +1503,7 @@ def export_all_agency_data(
         try:
             # Export agency data
             filepath = export_agency_data_to_excel(
-                agency_name, final_df, annuaire_df, bank_annuaire_df, output_dir
+                agency_name, final_df, annuaire_df, bank_annuaire_df, date_str, output_dir
             )
             
             exported_files[agency_name] = filepath
@@ -1494,6 +1531,7 @@ def export_all_agency_data(
 def create_master_summary_file(
     final_agency_data: Dict[str, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
     exported_files: Dict[str, str],
+    date_str: str,
     output_dir: str = "."
 ) -> str:
     """
@@ -1502,12 +1540,13 @@ def create_master_summary_file(
     Args:
         final_agency_data: Dictionary of finalized agency data
         exported_files: Dictionary of exported file paths
+        date_str: Date string in format DD_MM_YYYY
         output_dir: Directory to save the file
     
     Returns:
         Path to the master summary file
     """
-    master_filepath = Path(output_dir) / "SARA_Master_Summary_28_07_2025.xlsx"
+    master_filepath = Path(output_dir) / f"SARA_Master_Summary_{date_str}.xlsx"
     
     logger.info(f"Creating master summary file: {master_filepath}")
     
@@ -1723,7 +1762,7 @@ def send_sara_report_email(
             logger.info("  - SARA_EMAIL_RECIPIENTS: Comma-separated recipient emails")
             return False
         
-        # Extract date from filename (format: transactions_hop_28_07_2025.xlsx)
+        # Extract date from filename (format: transactions_hop_DD_MM_YYYY.xlsx)
         # Get the first file to extract the date
         first_file = list(exported_files.values())[0] if exported_files else master_summary_file
         filename = os.path.basename(first_file)
@@ -1874,9 +1913,13 @@ if __name__ == "__main__":
         print("SARA Transaction Processing Pipeline")
         print("=" * 40)
         print("Usage:")
-        print("  python3 sara_pipeline_production.py              # Run full pipeline")
-        print("  python3 sara_pipeline_production.py --test-email # Test email configuration")
-        print("  python3 sara_pipeline_production.py --help       # Show this help")
+        print("  python3 sara_pipeline_production.py                           # Run with default files")
+        print("  python3 sara_pipeline_production.py AGENT.xlsx CUSTOMER.xlsx  # Run with custom files")
+        print("  python3 sara_pipeline_production.py --test-email              # Test email configuration")
+        print("  python3 sara_pipeline_production.py --help                    # Show this help")
+        print("")
+        print("Default Files:")
+        print("  AGENT_30_07_2025.xlsx and CUSTOMER_30_07_2025.xlsx")
         print("")
         print("Email Configuration:")
         print("  Set these environment variables before running:")
@@ -1885,14 +1928,31 @@ if __name__ == "__main__":
         print("  export SARA_EMAIL_RECIPIENTS='partner1@email.com,partner2@email.com'")
         sys.exit(0)
     
+    # Parse command line arguments for file paths
+    if len(sys.argv) >= 3:
+        agent_file = sys.argv[1]
+        customer_file = sys.argv[2]
+        print(f"📁 Using provided files: {agent_file}, {customer_file}")
+    else:
+        # Default file paths (adjust dates as needed)
+        agent_file = 'AGENT_30_07_2025.xlsx'
+        customer_file = 'CUSTOMER_30_07_2025.xlsx'
+        print(f"📁 Using default files: {agent_file}, {customer_file}")
+    
     # Normal pipeline execution
     print("🚀 Starting SARA Transaction Processing Pipeline...")
     try:
         # Load data
-        agent_data, customer_data = load_transaction_data(
-            'AGENT_28_07_2025.xlsx', 
-            'CUSTOMER_28_07_2025.xlsx'
-        )
+        agent_data, customer_data = load_transaction_data(agent_file, customer_file)
+        
+        # Extract date from filename for output files
+        try:
+            date_str = extract_date_from_filename(agent_file)
+            print(f"📅 Extracted date: {date_str}")
+        except ValueError:
+            # Fallback to default if date extraction fails
+            date_str = "30_07_2025"
+            print(f"⚠️  Could not extract date from filename, using default: {date_str}")
         
         # Clean data
         agent_clean, customer_clean = clean_transaction_data(agent_data, customer_data)
@@ -1919,10 +1979,10 @@ if __name__ == "__main__":
         final_agency_data = finalize_all_agency_data(fixed_agency_solde_data)
         
         # Export data to Excel files
-        exported_files = export_all_agency_data(final_agency_data)
+        exported_files = export_all_agency_data(final_agency_data, date_str)
         
         # Create master summary file
-        master_summary_file = create_master_summary_file(final_agency_data, exported_files)
+        master_summary_file = create_master_summary_file(final_agency_data, exported_files, date_str)
         
         logger.info("✅ All files generated successfully. Proceeding to email notification...")
         
