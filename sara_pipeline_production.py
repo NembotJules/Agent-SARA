@@ -1037,10 +1037,13 @@ def create_solde_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, 
         nom_dest = row['Nom destinataire']
         nom_portefeuille_dest = row['Nom portefeuille destinataire']
         
-        # If Nom destinataire is empty/null, use Nom portefeuille destinataire
+        logger.debug(f"Debug: nom_dest = '{nom_dest}' (type: {type(nom_dest)}), nom_portefeuille_dest = '{nom_portefeuille_dest}' (type: {type(nom_portefeuille_dest)})")
+        
         if pd.isna(nom_dest) or str(nom_dest).strip() == '':
+            logger.debug("Using fallback: returning nom_portefeuille_dest")
             return nom_portefeuille_dest
         else:
+            logger.debug("Using nom_dest")
             return nom_dest
     
     df_processed.loc[expediteur_mask, 'Partenaire transaction'] = df_processed.loc[expediteur_mask].apply(get_partner_name_destinataire, axis=1)
