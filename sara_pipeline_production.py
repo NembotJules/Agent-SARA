@@ -1032,25 +1032,18 @@ def create_solde_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, 
     df_processed.loc[expediteur_mask, 'Solde après transaction'] = df_processed.loc[expediteur_mask, 'Solde expediteur apres transaction']
     df_processed.loc[expediteur_mask, 'Numero portefeuille partenaire transaction'] = df_processed.loc[expediteur_mask, 'Numero porte feuille destinataire']
     
-    # Apply fallback logic for Partenaire transaction (expediteur case)
-    fallback_used_count = 0
-    for idx in df_processed[expediteur_mask].index:
-        nom_destinataire = df_processed.loc[idx, 'Nom destinataire']
-        nom_portefeuille_dest = df_processed.loc[idx, 'Nom portefeuille destinataire']
+    # For Partenaire transaction: use Nom destinataire, but fallback to Nom portefeuille destinataire if empty
+    def get_partner_name_destinataire(row):
+        nom_dest = row['Nom destinataire']
+        nom_portefeuille_dest = row['Nom portefeuille destinataire']
         
-        # Use fallback logic: if one is empty, use the other
-        if pd.isna(nom_destinataire) or nom_destinataire == '' or str(nom_destinataire).strip() == '':
-            df_processed.loc[idx, 'Partenaire transaction'] = nom_portefeuille_dest
-            fallback_used_count += 1
-        elif pd.isna(nom_portefeuille_dest) or nom_portefeuille_dest == '' or str(nom_portefeuille_dest).strip() == '':
-            df_processed.loc[idx, 'Partenaire transaction'] = nom_destinataire
-            fallback_used_count += 1
+        # If Nom destinataire is empty/null, use Nom portefeuille destinataire
+        if pd.isna(nom_dest) or str(nom_dest).strip() == '':
+            return nom_portefeuille_dest
         else:
-            # Both available - prioritize Nom destinataire for customer transactions
-            df_processed.loc[idx, 'Partenaire transaction'] = nom_destinataire
+            return nom_dest
     
-    if fallback_used_count > 0:
-        logger.info(f"Applied fallback logic for {fallback_used_count} transactions in expediteur case")
+    df_processed.loc[expediteur_mask, 'Partenaire transaction'] = df_processed.loc[expediteur_mask].apply(get_partner_name_destinataire, axis=1)
     
     # Add bank account info when available (for expediteur case)
     bank_mask_exp = expediteur_mask & df_processed['Compte bancaire destinataire'].notna()
@@ -1066,22 +1059,8 @@ def create_solde_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, 
     df_processed.loc[destinataire_mask, 'Solde après transaction'] = df_processed.loc[destinataire_mask, 'Solde destinataire apres transaction']
     df_processed.loc[destinataire_mask, 'Numero portefeuille partenaire transaction'] = df_processed.loc[destinataire_mask, 'Numero porte feuille expediteur']
     
-    # Apply fallback logic for Partenaire transaction (destinataire case)
-    # Note: For destinataire case, we use expediteur information since agency is receiving
-    destinataire_fallback_count = 0
-    for idx in df_processed[destinataire_mask].index:
-        nom_portefeuille_exp = df_processed.loc[idx, 'Nom portefeuille expediteur']
-        
-        # Check if expediteur name is empty and log it
-        if pd.isna(nom_portefeuille_exp) or nom_portefeuille_exp == '' or str(nom_portefeuille_exp).strip() == '':
-            logger.warning(f"Empty expediteur name found at index {idx} - this should be investigated")
-            destinataire_fallback_count += 1
-        
-        # For expediteur side, we typically only have "Nom portefeuille expediteur" 
-        df_processed.loc[idx, 'Partenaire transaction'] = nom_portefeuille_exp
-    
-    if destinataire_fallback_count > 0:
-        logger.warning(f"Found {destinataire_fallback_count} transactions with empty expediteur names in destinataire case")
+    # For Partenaire transaction: use Nom portefeuille expediteur (simpler case - typically always available)
+    df_processed.loc[destinataire_mask, 'Partenaire transaction'] = df_processed.loc[destinataire_mask, 'Nom portefeuille expediteur']
 
     logger.info(f"Agency perspective applied: {expediteur_count} as sender, {destinataire_count} as receiver")
 
