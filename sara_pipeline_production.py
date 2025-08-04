@@ -1030,13 +1030,31 @@ def create_solde_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, 
     df_processed.loc[expediteur_mask, 'Numero portefeuille'] = df_processed.loc[expediteur_mask, 'Numero porte feuille expediteur']
     df_processed.loc[expediteur_mask, 'Solde avant transaction'] = df_processed.loc[expediteur_mask, 'Solde expediteur avant transaction']
     df_processed.loc[expediteur_mask, 'Solde après transaction'] = df_processed.loc[expediteur_mask, 'Solde expediteur apres transaction']
-    df_processed.loc[expediteur_mask, 'Partenaire transaction'] = df_processed.loc[expediteur_mask, 'Nom portefeuille destinataire']
     df_processed.loc[expediteur_mask, 'Numero portefeuille partenaire transaction'] = df_processed.loc[expediteur_mask, 'Numero porte feuille destinataire']
+    
+    # Apply fallback logic for Partenaire transaction (expediteur case)
+    fallback_used_count = 0
+    for idx in df_processed[expediteur_mask].index:
+        nom_destinataire = df_processed.loc[idx, 'Nom destinataire']
+        nom_portefeuille_dest = df_processed.loc[idx, 'Nom portefeuille destinataire']
+        
+        # Use fallback logic: if one is empty, use the other
+        if pd.isna(nom_destinataire) or nom_destinataire == '' or str(nom_destinataire).strip() == '':
+            df_processed.loc[idx, 'Partenaire transaction'] = nom_portefeuille_dest
+            fallback_used_count += 1
+        elif pd.isna(nom_portefeuille_dest) or nom_portefeuille_dest == '' or str(nom_portefeuille_dest).strip() == '':
+            df_processed.loc[idx, 'Partenaire transaction'] = nom_destinataire
+            fallback_used_count += 1
+        else:
+            # Both available - prioritize Nom destinataire for customer transactions
+            df_processed.loc[idx, 'Partenaire transaction'] = nom_destinataire
+    
+    if fallback_used_count > 0:
+        logger.info(f"Applied fallback logic for {fallback_used_count} transactions in expediteur case")
     
     # Add bank account info when available (for expediteur case)
     bank_mask_exp = expediteur_mask & df_processed['Compte bancaire destinataire'].notna()
     df_processed.loc[bank_mask_exp, 'Compte bancaire partenaire'] = df_processed.loc[bank_mask_exp, 'Compte bancaire destinataire']
-    df_processed.loc[bank_mask_exp, 'Partenaire transaction'] = df_processed.loc[bank_mask_exp, 'Nom destinataire']
 
     # Case 2: When agency is destinataire (receiver)
     destinataire_mask = df_processed['Nom portefeuille destinataire'].apply(is_any_agency)
@@ -1046,8 +1064,24 @@ def create_solde_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, 
     df_processed.loc[destinataire_mask, 'Numero portefeuille'] = df_processed.loc[destinataire_mask, 'Numero porte feuille destinataire']
     df_processed.loc[destinataire_mask, 'Solde avant transaction'] = df_processed.loc[destinataire_mask, 'Solde destinataire avant transaction']
     df_processed.loc[destinataire_mask, 'Solde après transaction'] = df_processed.loc[destinataire_mask, 'Solde destinataire apres transaction']
-    df_processed.loc[destinataire_mask, 'Partenaire transaction'] = df_processed.loc[destinataire_mask, 'Nom portefeuille expediteur']
     df_processed.loc[destinataire_mask, 'Numero portefeuille partenaire transaction'] = df_processed.loc[destinataire_mask, 'Numero porte feuille expediteur']
+    
+    # Apply fallback logic for Partenaire transaction (destinataire case)
+    # Note: For destinataire case, we use expediteur information since agency is receiving
+    destinataire_fallback_count = 0
+    for idx in df_processed[destinataire_mask].index:
+        nom_portefeuille_exp = df_processed.loc[idx, 'Nom portefeuille expediteur']
+        
+        # Check if expediteur name is empty and log it
+        if pd.isna(nom_portefeuille_exp) or nom_portefeuille_exp == '' or str(nom_portefeuille_exp).strip() == '':
+            logger.warning(f"Empty expediteur name found at index {idx} - this should be investigated")
+            destinataire_fallback_count += 1
+        
+        # For expediteur side, we typically only have "Nom portefeuille expediteur" 
+        df_processed.loc[idx, 'Partenaire transaction'] = nom_portefeuille_exp
+    
+    if destinataire_fallback_count > 0:
+        logger.warning(f"Found {destinataire_fallback_count} transactions with empty expediteur names in destinataire case")
 
     logger.info(f"Agency perspective applied: {expediteur_count} as sender, {destinataire_count} as receiver")
 
@@ -1935,8 +1969,8 @@ if __name__ == "__main__":
         print(f"📁 Using provided files: {agent_file}, {customer_file}")
     else:
         # Default file paths (adjust dates as needed)
-        agent_file = 'AGENT_30_07_2025.xlsx'
-        customer_file = 'CUSTOMER_30_07_2025.xlsx'
+        agent_file = 'AGENT_31_07_2025.xlsx'
+        customer_file = 'CUSTOMER_31_07_2025.xlsx'
         print(f"📁 Using default files: {agent_file}, {customer_file}")
     
     # Normal pipeline execution
@@ -1951,7 +1985,7 @@ if __name__ == "__main__":
             print(f"📅 Extracted date: {date_str}")
         except ValueError:
             # Fallback to default if date extraction fails
-            date_str = "30_07_2025"
+            date_str = "31_07_2025"
             print(f"⚠️  Could not extract date from filename, using default: {date_str}")
         
         # Clean data
