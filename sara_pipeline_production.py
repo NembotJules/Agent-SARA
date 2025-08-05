@@ -1047,13 +1047,14 @@ def create_solde_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, 
             return nom_dest
     
     df_processed.loc[expediteur_mask, 'Partenaire transaction'] = df_processed.loc[expediteur_mask].apply(get_partner_name_destinataire, axis=1)
-    print(f"After apply: Sample Partenaire transaction values for expediteur (first 5): {df_processed.loc[expediteur_mask, 'Partenaire transaction'].head().tolist()}")
-    print(f"Number of non-empty Partenaire transaction in expediteur: {df_processed.loc[expediteur_mask, 'Partenaire transaction'].notna().sum()}")
-    print(f"Sample row with bank: {df_processed.loc[bank_mask_exp].iloc[0][['Partenaire transaction', 'Compte bancaire partenaire']] if not bank_mask_exp.empty else 'No bank rows'}")
     
     # Add bank account info when available (for expediteur case)
     bank_mask_exp = expediteur_mask & df_processed['Compte bancaire destinataire'].notna()
     df_processed.loc[bank_mask_exp, 'Compte bancaire partenaire'] = df_processed.loc[bank_mask_exp, 'Compte bancaire destinataire']
+    
+    print(f"After apply: Sample Partenaire transaction values for expediteur (first 5): {df_processed.loc[expediteur_mask, 'Partenaire transaction'].head().tolist()}")
+    print(f"Number of non-empty Partenaire transaction in expediteur: {df_processed.loc[expediteur_mask, 'Partenaire transaction'].notna().sum()}")
+    print(f"Sample row with bank: {df_processed.loc[bank_mask_exp].iloc[0][['Partenaire transaction', 'Compte bancaire partenaire']] if not bank_mask_exp.empty else 'No bank rows'}")
 
     # Case 2: When agency is destinataire (receiver)
     destinataire_mask = df_processed['Nom portefeuille destinataire'].apply(is_any_agency)
