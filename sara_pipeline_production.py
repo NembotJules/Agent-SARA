@@ -1069,6 +1069,10 @@ def create_solde_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, 
     # For Partenaire transaction: use Nom portefeuille expediteur (simpler case - typically always available)
     df_processed.loc[destinataire_mask, 'Partenaire transaction'] = df_processed.loc[destinataire_mask, 'Nom portefeuille expediteur']
 
+    # Clean up: Replace zeros in "Numero portefeuille partenaire transaction" with empty strings
+    df_processed['Numero portefeuille partenaire transaction'] = df_processed['Numero portefeuille partenaire transaction'].replace(0, '')
+    df_processed['Numero portefeuille partenaire transaction'] = df_processed['Numero portefeuille partenaire transaction'].replace('0', '')
+
     logger.info(f"Agency perspective applied: {expediteur_count} as sender, {destinataire_count} as receiver")
 
     # Sort by wallet name and date/time to see progression
